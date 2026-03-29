@@ -1,18 +1,15 @@
-# Face Recognition Attendance System
+# MyPresence Website
 
-A web-based attendance app built with Next.js, Tailwind CSS, face-api.js, react-webcam, and Supabase.
+The website portion for our app called MyPresence: A Mobile Event Management and Automated Attendance Monitoring System with Data Analytics for HPCI Thrive.
 
 ## Features
 
-- User registration with webcam face capture and descriptor extraction
-- Real-time attendance scanning with face matching threshold of 0.5
-- Duplicate attendance prevention for the same user on the same day
-- Attendance records view with date filtering
-- Edge-case handling:
-  - no face detected
-  - multiple faces detected
-  - low-confidence match
-  - camera permission denied
+- Member registration with webcam face capture and descriptor extraction
+- Real-time attendance scanning with service or event grouping
+- Attendance analytics views (mix, timeline, and funnel)
+- Date-range filtering for records and dashboard analytics
+- Event manager integration with Supabase
+- Edge-case handling for camera and face detection issues
 
 ## Tech Stack
 
@@ -20,50 +17,26 @@ A web-based attendance app built with Next.js, Tailwind CSS, face-api.js, react-
 - Tailwind CSS
 - face-api.js
 - react-webcam
-- Supabase (`@supabase/supabase-js`)
+- Supabase
 
 ## Setup
 
 1. Install dependencies
 
-```bash
-npm install
-```
+  npm install
 
-2. Create environment file
+2. Create environment file from example and set values
 
-```bash
-cp .env.example .env.local
-```
+  - NEXT_PUBLIC_SUPABASE_URL
+  - NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-Set values:
+3. Run database schema in Supabase
 
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+  - supabase/schema.sql
+  - For upgrades, run supabase/patch_2026_03_29.sql
 
-3. Create tables in Supabase SQL editor
+4. Ensure face-api model files are in public/models
 
-- Run [supabase/schema.sql](supabase/schema.sql)
+5. Start the app
 
-4. Add face-api.js model files
-
-- Copy required model files into [public/models](public/models)
-- See [public/models/README.md](public/models/README.md)
-
-5. Start app
-
-```bash
-npm run dev
-```
-
-## Routes
-
-- `/register`: register a user with webcam capture
-- `/attendance`: live attendance scanner
-- `/records`: attendance logs with date filter
-
-## Notes
-
-- `users.descriptor` is stored as JSON array and converted to `Float32Array` during matching.
-- Attendance matching uses `faceapi.FaceMatcher` with threshold `0.5`.
-- Duplicate prevention is handled both client-side and with DB unique constraint `(student_id, attended_date)`.
+  npm run dev
