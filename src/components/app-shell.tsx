@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 
 type NavItem = {
   href: string;
@@ -62,6 +63,18 @@ const navItems: NavItem[] = [
     )
   },
   {
+    href: "/members",
+    label: "Members",
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M16 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3Z" />
+        <path d="M8 12a3 3 0 1 0-3-3 3 3 0 0 0 3 3Z" />
+        <path d="M2.5 20a5.5 5.5 0 0 1 11 0" />
+        <path d="M12.5 20a5.5 5.5 0 0 1 9 0" />
+      </svg>
+    )
+  },
+  {
     href: "/settings",
     label: "Settings",
     icon: (
@@ -79,6 +92,7 @@ function titleFromPath(pathname: string) {
   if (pathname === "/attendance") return "Live Attendance";
   if (pathname === "/records") return "Attendance Logs";
   if (pathname === "/events-manager") return "Event Manager";
+  if (pathname === "/members") return "Member Management";
   if (pathname === "/settings") return "Settings";
   if (pathname === "/login") return "Login";
   return "MyPresence";
@@ -86,18 +100,103 @@ function titleFromPath(pathname: string) {
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [mounted, setMounted] = useState(false);
+  const router = useRouter();
   const [logoFailed, setLogoFailed] = useState(false);
+  const [authChecked, setAuthChecked] = useState(() => !hasSupabaseEnv);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
-  }, []);
+    if (!hasSupabaseEnv) {
+      if (pathname !== "/login") {
+        router.replace("/login");
+      }
+      return;
+    }
 
-  const activePath = mounted ? pathname : "/";
+    let active = true;
+
+    const syncSession = async () => {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      if (!active) return;
+
+      const authed = Boolean(session);
+      setIsAuthenticated(authed);
+      setAuthChecked(true);
+
+      if (!authed && pathname !== "/login") {
+        router.replace("/login");
+      }
+
+      if (authed && pathname === "/login") {
+        router.replace("/");
+      }
+    };
+
+    void syncSession();
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const authed = Boolean(session);
+      setIsAuthenticated(authed);
+      setAuthChecked(true);
+
+      if (!authed && pathname !== "/login") {
+        router.replace("/login");
+      }
+
+      if (authed && pathname === "/login") {
+        router.replace("/");
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [pathname, router]);
+
+  const handleSignOut = async () => {
+    if (!hasSupabaseEnv || signingOut) return;
+    setSigningOut(true);
+    await supabase.auth.signOut();
+    setSigningOut(false);
+    router.replace("/login");
+  };
+
+  const activePath = pathname;
   const currentTitle = titleFromPath(activePath);
 
-  if (mounted && pathname === "/login") {
+  if (pathname === "/login") {
+    if (!hasSupabaseEnv) {
+      return (
+        <div className="min-h-screen bg-[#e9e9e9] px-6 py-10">
+          <div className="mx-auto max-w-xl rounded-3xl border border-[#e2b9bb] bg-white p-6 shadow-[0_18px_36px_rgba(56,91,79,0.14)]">
+            <h1 className="font-[var(--font-heading)] text-2xl text-[#22332d]">Supabase Setup Required</h1>
+            <p className="mt-3 text-sm text-[#5d7269]">
+              {supabaseEnvIssue ?? "Missing Supabase environment values in .env.local."}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return <>{children}</>;
+  }
+
+  if (!authChecked || !isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#e9e9e9] px-6 py-10">
+        <div className="mx-auto max-w-md rounded-3xl border border-[#c3d0cb] bg-white/90 p-6 text-center shadow-[0_18px_36px_rgba(56,91,79,0.14)]">
+          <p className="font-[var(--font-heading)] text-xl text-[#22332d]">Checking session...</p>
+          <p className="mt-2 text-sm text-[#5d7269]">Redirecting to login if needed.</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -145,11 +244,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   onError={() => setLogoFailed(true)}
                 />
               ) : null}
-              <p className="font-[var(--font-heading)] text-2xl font-semibold text-[#1f2f29]">{currentTitle}</p>
+              <p className="font-[var(--font-heading)] text-2xl text-[#1f2f29]">{currentTitle}</p>
             </div>
-            <Link href="/login" className="btn-ghost py-2 text-xs">
-              Sign Out
-            </Link>
+            <button type="button" className="btn-ghost py-2 text-xs" onClick={() => void handleSignOut()} disabled={signingOut}>
+              {signingOut ? "Signing Out..." : "Sign Out"}
+            </button>
           </div>
           <div className="scrollbar-none flex gap-2 overflow-x-auto px-4 pb-3 md:hidden">
             {navItems.map((item) => {

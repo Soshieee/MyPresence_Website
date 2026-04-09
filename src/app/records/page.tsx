@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
-import { AttendanceLog } from "@/types";
+import { AttendanceLog, UserFace } from "@/types";
 import SimpleBarChart from "@/components/simple-bar-chart";
 import StackedGroupTimeline from "@/components/stacked-group-timeline";
 import StackedPercentageChart from "@/components/stacked-percentage-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
+import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
 type AnalyticsView = "timeline" | "mix";
@@ -18,6 +19,7 @@ function isMissingClassificationColumnError(message: string) {
 
 export default function AttendanceRecordsPage() {
   const [logs, setLogs] = useState<AttendanceLog[]>([]);
+  const [users, setUsers] = useState<UserFace[]>([]);
   const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
   const [fromDate, setFromDate] = useState("");
@@ -85,7 +87,7 @@ export default function AttendanceRecordsPage() {
     setError("");
 
     try {
-      let query = supabase
+      const query = supabase
         .from("attendance")
         .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, attended_date, attended_at")
         .gte("attended_date", range.from)
@@ -94,9 +96,14 @@ export default function AttendanceRecordsPage() {
 
       const { data, error: fetchError } = await query;
 
+      const usersResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
+      if (!usersResult.error) {
+        setUsers((usersResult.data ?? []) as UserFace[]);
+      }
+
       if (fetchError) {
         if (isMissingClassificationColumnError(fetchError.message)) {
-          let fallbackQuery = supabase
+          const fallbackQuery = supabase
             .from("attendance")
             .select("id, student_id, full_name, attended_date, attended_at")
             .gte("attended_date", range.from)
@@ -135,37 +142,24 @@ export default function AttendanceRecordsPage() {
     void fetchLogs();
   }, [fetchLogs]);
 
-  const recordsByDate = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const log of logs) {
-      map.set(log.attended_date, (map.get(log.attended_date) ?? 0) + 1);
-    }
-
-    return Array.from(map.entries())
-      .filter(([label]) => label >= MIN_ANALYTICS_DATE)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-7)
-      .map(([label, value]) => ({ label: formatDateMMDDYY(label), value, color: "#385b4f" }));
-  }, [formatDateMMDDYY, logs]);
+  const userNetworkMap = useMemo(() => buildStudentNetworkMap(users), [users]);
 
   const timelineRows = useMemo(() => {
-    const map = new Map<string, { firstService: number; secondService: number; rooftop: number; male: number; female: number }>();
+    const map = new Map<string, ReturnType<typeof createEmptyNetworkCounts>>();
 
     for (const log of logs) {
       if (log.attended_date < MIN_ANALYTICS_DATE) continue;
 
       if (!map.has(log.attended_date)) {
-        map.set(log.attended_date, { firstService: 0, secondService: 0, rooftop: 0, male: 0, female: 0 });
+        map.set(log.attended_date, createEmptyNetworkCounts());
       }
 
       const row = map.get(log.attended_date);
       if (!row) continue;
 
-      if (log.attendance_context === "Sunday Service" && log.attendance_group === "First Service") row.firstService += 1;
-      if (log.attendance_context === "Sunday Service" && log.attendance_group === "Second Service") row.secondService += 1;
-      if (log.attendance_context === "Events" && log.attendance_group === "Rooftop") row.rooftop += 1;
-      if (log.attendance_context === "Events" && log.attendance_group === "Male") row.male += 1;
-      if (log.attendance_context === "Events" && log.attendance_group === "Female") row.female += 1;
+      const networkKey = userNetworkMap.get(log.student_id);
+      if (!networkKey) continue;
+      row[networkKey] += 1;
     }
 
     return Array.from(map.entries())
@@ -175,35 +169,27 @@ export default function AttendanceRecordsPage() {
         label: formatDateMMDDYY(date),
         ...row
       }));
-  }, [formatDateMMDDYY, logs]);
+  }, [formatDateMMDDYY, logs, userNetworkMap]);
 
   const newcomerCount = useMemo(() => logs.filter((log) => log.was_newcomer).length, [logs]);
 
   const recordsByGroup = useMemo(() => {
-    const counts = {
-      "1st Service": 0,
-      "2nd Service": 0,
-      Rooftop: 0,
-      Male: 0,
-      Female: 0
-    };
+    const counts = createEmptyNetworkCounts();
 
     for (const log of logs) {
-      if (log.attendance_context === "Sunday Service" && log.attendance_group === "First Service") counts["1st Service"] += 1;
-      if (log.attendance_context === "Sunday Service" && log.attendance_group === "Second Service") counts["2nd Service"] += 1;
-      if (log.attendance_context === "Events" && log.attendance_group === "Rooftop") counts.Rooftop += 1;
-      if (log.attendance_context === "Events" && log.attendance_group === "Male") counts.Male += 1;
-      if (log.attendance_context === "Events" && log.attendance_group === "Female") counts.Female += 1;
+      const networkKey = userNetworkMap.get(log.student_id);
+      if (!networkKey) continue;
+      counts[networkKey] += 1;
     }
 
     return [
-      { label: "1st Service", value: counts["1st Service"], color: GROUP_COLORS.firstService },
-      { label: "2nd Service", value: counts["2nd Service"], color: GROUP_COLORS.secondService },
-      { label: "Rooftop", value: counts.Rooftop, color: GROUP_COLORS.rooftop },
-      { label: "Male", value: counts.Male, color: GROUP_COLORS.male },
-      { label: "Female", value: counts.Female, color: GROUP_COLORS.female }
+      { label: NETWORK_LABELS.kidsMinistry, value: counts.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
+      { label: NETWORK_LABELS.youthMinistry, value: counts.youthMinistry, color: GROUP_COLORS.youthMinistry },
+      { label: NETWORK_LABELS.youngProfessionals, value: counts.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
+      { label: NETWORK_LABELS.mensNetwork, value: counts.mensNetwork, color: GROUP_COLORS.mensNetwork },
+      { label: NETWORK_LABELS.womensNetwork, value: counts.womensNetwork, color: GROUP_COLORS.womensNetwork }
     ];
-  }, [logs]);
+  }, [logs, userNetworkMap]);
 
   return (
     <div className="space-y-6 reveal">
@@ -215,19 +201,19 @@ export default function AttendanceRecordsPage() {
       <section className="analytics-strip">
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Total Rows</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl font-semibold text-[#22322d]">{logs.length}</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{logs.length}</p>
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Filter</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl font-semibold text-[#22322d]">{rangePreset === "custom" ? "Custom" : rangePreset.toUpperCase()}</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{rangePreset === "custom" ? "Custom" : rangePreset.toUpperCase()}</p>
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Status</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl font-semibold text-[#22322d]">{loading ? "Syncing" : "Ready"}</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{loading ? "Syncing" : "Ready"}</p>
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Newcomer Scans</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl font-semibold text-[#22322d]">{newcomerCount}</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{newcomerCount}</p>
         </article>
       </section>
 
@@ -262,7 +248,7 @@ export default function AttendanceRecordsPage() {
               <tr className="text-left text-[#4f675e]">
                 <th className="px-3 py-2 font-semibold">Name</th>
                 <th className="px-3 py-2 font-semibold">ID</th>
-                <th className="px-3 py-2 font-semibold">Category</th>
+                <th className="px-3 py-2 font-semibold">Attended</th>
                 <th className="px-3 py-2 font-semibold">Date</th>
                 <th className="px-3 py-2 font-semibold">Time</th>
               </tr>
@@ -273,7 +259,7 @@ export default function AttendanceRecordsPage() {
                   <tr key={log.id} className="rounded-xl bg-white/85 text-[#30463f] shadow-[0_6px_16px_rgba(56,91,79,0.08)]">
                     <td className="rounded-l-xl px-3 py-2.5">{log.full_name}</td>
                     <td className="px-3 py-2.5">{log.student_id}</td>
-                    <td className="px-3 py-2.5 text-xs text-[#4f675e]">{log.attendance_group ?? "-"}</td>
+                    <td className="px-3 py-2.5 text-xs text-[#4f675e]">{(userNetworkMap.get(log.student_id) ? NETWORK_LABELS[userNetworkMap.get(log.student_id)!] : "-")}</td>
                     <td className="px-3 py-2.5">{formatDateMMDDYY(log.attended_date)}</td>
                     <td className="rounded-r-xl px-3 py-2.5">{formatTimeHHmm(log.attended_at)}</td>
                   </tr>
@@ -285,18 +271,18 @@ export default function AttendanceRecordsPage() {
       </div>
 
       <section className="analytics-panel">
-        <h2 className="font-[var(--font-heading)] text-lg font-semibold text-[#23332d]">History Trend Frame</h2>
+        <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">History Trend Frame</h2>
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" onClick={() => setAnalyticsView("mix")} className={analyticsView === "mix" ? "btn-primary" : "btn-ghost"}>100% Mix</button>
           <button type="button" onClick={() => setAnalyticsView("timeline")} className={analyticsView === "timeline" ? "btn-primary" : "btn-ghost"}>Timeline</button>
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           {analyticsView === "mix" ? (
-            <StackedPercentageChart title="Daily Group Mix (100%)" rows={timelineRows} emptyText="No grouped mix data yet." />
+            <StackedPercentageChart title="Daily Network Attendance" rows={timelineRows} emptyText="No network attendance data yet." />
           ) : (
-            <StackedGroupTimeline title="Daily Group Timeline" rows={timelineRows} emptyText="No grouped timeline data yet." />
+            <StackedGroupTimeline title="Daily Network Timeline" rows={timelineRows} emptyText="No network timeline data yet." />
           )}
-          <SimpleBarChart title="Attendance by Group" items={recordsByGroup} emptyText="No categorized attendance yet." />
+          <SimpleBarChart title="Attendance by Network" items={recordsByGroup} emptyText="No network attendance yet." />
         </div>
       </section>
     </div>

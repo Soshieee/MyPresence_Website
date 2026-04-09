@@ -71,7 +71,7 @@ export default function SettingsPage() {
 
       <section className="space-y-4">
         <div className="analytics-panel">
-          <h2 className="font-[var(--font-heading)] text-xl font-semibold text-[#22332d]">Scan Settings</h2>
+          <h2 className="text-xl font-semibold text-[#22332d]">Scan Settings</h2>
           <div className="mt-4 space-y-4 rounded-2xl border border-[#b9cac3] bg-white/75 p-4 text-[#35564a]">
             <div>
               <p className="text-sm font-semibold">Remove newcomer tag after</p>
@@ -101,7 +101,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="analytics-panel">
-          <h2 className="font-[var(--font-heading)] text-xl font-semibold text-[#22332d]">Danger Zone</h2>
+          <h2 className="text-xl font-semibold text-[#22332d]">Danger Zone</h2>
           <div className="mt-4 space-y-3 rounded-2xl border border-[#e0b8bb] bg-[#fff7f7] p-4 text-[#5b3135]">
             <p className="text-sm font-semibold">Reset database data</p>
             <p className="text-xs text-[#744147]">

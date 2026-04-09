@@ -16,6 +16,7 @@ export type AttendanceLog = {
   was_newcomer: boolean;
   attendance_context: "Sunday Service" | "Events" | null;
   attendance_group: "First Service" | "Second Service" | "Rooftop" | "Male" | "Female" | null;
+  event_id?: string | null;
   attended_date: string;
   attended_at: string;
 };
@@ -27,6 +28,13 @@ export type EventItem = {
   event_date: string | null;
   location: string | null;
   poster_url: string | null;
+  created_at: string;
+};
+
+export type EventSuggestion = {
+  id: string;
+  event_id: string;
+  suggestion_text: string;
   created_at: string;
 };
 

@@ -10,6 +10,12 @@ import { extractLivenessMetrics } from "@/lib/liveness";
 type RegisterStatusType = "idle" | "info" | "success" | "error";
 type ChallengeType = "blink" | "turn";
 
+type ChallengeDetection = {
+  descriptor: Float32Array;
+  landmarks: Parameters<typeof extractLivenessMetrics>[0];
+  detection: { box: { x: number; width: number } };
+};
+
 function toErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
 
@@ -31,8 +37,9 @@ export default function RegisterPage() {
   const webcamRef = useRef<Webcam | null>(null);
   const [fullName, setFullName] = useState("");
   const [age, setAge] = useState("");
-  const [gender, setGender] = useState<"Male" | "Female" | "Other">("Male");
+  const [gender, setGender] = useState<"Male" | "Female">("Male");
   const [newcomer, setNewcomer] = useState(true);
+  const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
   const [loading, setLoading] = useState(false);
   const [statusType, setStatusType] = useState<RegisterStatusType>("idle");
   const [statusMessage, setStatusMessage] = useState("Fill in details and capture a single clear face.");
@@ -66,7 +73,7 @@ export default function RegisterPage() {
       let blinkPassed = false;
       let baseNoseRatio: number | null = null;
       let turnPassed = false;
-      let latestDetection: any = null;
+      let latestDetection: ChallengeDetection | null = null;
 
       setStatusType("info");
       setStatusMessage(`Anti-photo check: ${challengeText}`);
@@ -85,7 +92,7 @@ export default function RegisterPage() {
           continue;
         }
 
-        latestDetection = detection;
+        latestDetection = detection as unknown as ChallengeDetection;
         const metrics = extractLivenessMetrics(detection.landmarks, detection.detection.box);
         if (!metrics) {
           await new Promise((resolve) => setTimeout(resolve, 180));
@@ -235,7 +242,7 @@ export default function RegisterPage() {
         setLoading(false);
       }
     },
-    [age, fullName, gender, generateMemberId, newcomer]
+    [age, fullName, gender, generateMemberId, newcomer, runAntiPhotoChallenge]
   );
 
   return (
@@ -275,10 +282,9 @@ export default function RegisterPage() {
               </div>
               <div>
                 <label className="field-label">Gender</label>
-                <select value={gender} onChange={(event) => setGender(event.target.value as "Male" | "Female" | "Other")} className="field-input">
+                <select value={gender} onChange={(event) => setGender(event.target.value as "Male" | "Female")} className="field-input">
                   <option value="Male">Male</option>
                   <option value="Female">Female</option>
-                  <option value="Other">Other</option>
                 </select>
               </div>
             </div>
@@ -318,21 +324,30 @@ export default function RegisterPage() {
         </div>
 
         <div className="card bg-[#f8fbfa]">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#5a776b]">Live Camera</p>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#5a776b]">Live Camera</p>
+            <button
+              type="button"
+              className="btn-ghost px-3 py-1.5 text-xs"
+              onClick={() => setCameraFacingMode((prev) => (prev === "user" ? "environment" : "user"))}
+            >
+              Flip Camera
+            </button>
+          </div>
           <Webcam
             ref={webcamRef}
             audio={false}
             screenshotFormat="image/jpeg"
             onUserMediaError={handleUserMediaError}
             videoConstraints={{
-              facingMode: "user",
+              facingMode: cameraFacingMode,
               width: 640,
               height: 480
             }}
             className="h-auto w-full rounded-xl border border-[#b9c8c2] shadow-[0_10px_24px_rgba(56,91,79,0.16)]"
           />
           <div className="analytics-panel mt-4">
-            <h3 className="font-[var(--font-heading)] text-lg font-semibold text-[#22332d]">Capture Guide</h3>
+            <h3 className="font-[var(--font-heading)] text-lg text-[#22332d]">Capture Guide</h3>
             <p className="mt-2 text-sm text-[#5a7268]">Center your face, keep lighting clear, and follow the anti-photo prompt (blink or slight head turn).</p>
             <div className="chart-frame h-24" />
           </div>

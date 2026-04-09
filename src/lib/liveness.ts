@@ -1,5 +1,11 @@
 type PointLike = { x: number; y: number };
 
+type LandmarksLike = {
+  getLeftEye?: () => PointLike[];
+  getRightEye?: () => PointLike[];
+  getNose?: () => PointLike[];
+};
+
 type LivenessMetrics = {
   ear: number;
   noseRatio: number;
@@ -19,7 +25,7 @@ function eyeAspectRatio(eye: PointLike[]) {
   return vertical / (2 * horizontal);
 }
 
-export function extractLivenessMetrics(landmarks: any, box: { x: number; width: number }): LivenessMetrics | null {
+export function extractLivenessMetrics(landmarks: LandmarksLike | null, box: { x: number; width: number }): LivenessMetrics | null {
   if (!landmarks || !box || box.width <= 0) return null;
 
   const leftEye = landmarks.getLeftEye?.() as PointLike[] | undefined;

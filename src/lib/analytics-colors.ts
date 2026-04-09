@@ -1,15 +1,15 @@
 export const GROUP_COLORS = {
-  firstService: "#2563eb",
-  secondService: "#f59e0b",
-  rooftop: "#8b5cf6",
-  male: "#10b981",
-  female: "#ef4444"
+  kidsMinistry: "#3b82f6",
+  youthMinistry: "#f59e0b",
+  youngProfessionals: "#8b5cf6",
+  mensNetwork: "#10b981",
+  womensNetwork: "#ef4444"
 } as const;
 
 export const GROUP_SHORT_LABELS = {
-  firstService: "1st",
-  secondService: "2nd",
-  rooftop: "Roof",
-  male: "Male",
-  female: "Fem"
+  kidsMinistry: "Kid",
+  youthMinistry: "Youth",
+  youngProfessionals: "Young",
+  mensNetwork: "Men",
+  womensNetwork: "Women"
 } as const;

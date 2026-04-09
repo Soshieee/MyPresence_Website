@@ -5,10 +5,11 @@ import Webcam from "react-webcam";
 import * as faceapi from "face-api.js";
 import { getFaceDetectorOptions, loadFaceApiModels } from "@/lib/faceApi";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
-import { AttendanceLog, UserFace } from "@/types";
+import { AttendanceLog, EventItem, UserFace } from "@/types";
 import { loadAppSettings } from "@/lib/app-settings";
 import SimpleBarChart from "@/components/simple-bar-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
+import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type ScannerStatusType = "info" | "success" | "error";
 type AttendanceContext = "Sunday Service" | "Events";
@@ -26,29 +27,15 @@ function getTodayIsoDate() {
 }
 
 function isMissingClassificationColumnError(message: string) {
-  return /column\s+attendance\.(was_newcomer|attendance_context|attendance_group)\s+does not exist/i.test(message);
+  return /column\s+attendance\.(was_newcomer|attendance_context|attendance_group|event_id)\s+does not exist/i.test(message);
 }
 
-function getGroupKey(log: AttendanceLog): AttendanceGroup | null {
-  if (log.attendance_context === "Sunday Service") {
-    if (log.attendance_group === "First Service" || log.attendance_group === "Second Service") {
-      return log.attendance_group;
-    }
-    return null;
-  }
-
-  if (log.attendance_context === "Events") {
-    if (log.attendance_group === "Rooftop" || log.attendance_group === "Male" || log.attendance_group === "Female") {
-      return log.attendance_group;
-    }
-    return null;
-  }
-
-  return null;
+function isMissingEventsTableError(message: string) {
+  return /Could not find the table 'public\.events'|relation\s+"?events"?\s+does not exist/i.test(message);
 }
 
-function makeAttendanceKey(studentId: string, date: string, context: AttendanceContext, group: AttendanceGroup) {
-  return `${studentId}|${date}|${context}|${group}`;
+function makeAttendanceKey(studentId: string, date: string, context: AttendanceContext, group: AttendanceGroup, eventId: string | null) {
+  return `${studentId}|${date}|${context}|${group}|${eventId ?? "none"}`;
 }
 
 export default function AttendancePage() {
@@ -60,11 +47,14 @@ export default function AttendancePage() {
   const [statusMessage, setStatusMessage] = useState("Loading models and known face descriptors...");
   const [isReady, setIsReady] = useState(false);
   const [users, setUsers] = useState<UserFace[]>([]);
+  const [events, setEvents] = useState<EventItem[]>([]);
   const [todayLogs, setTodayLogs] = useState<AttendanceLog[]>([]);
   const [newcomerClearCount, setNewcomerClearCount] = useState<1 | 2>(2);
   const [selectedContext, setSelectedContext] = useState<AttendanceContext | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<AttendanceGroup | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [latestMatch, setLatestMatch] = useState<{ name: string; studentId: string; context: AttendanceContext; group: AttendanceGroup } | null>(null);
+  const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
 
   const statusClass = useMemo(() => {
     if (statusType === "success") return "status-success";
@@ -91,24 +81,12 @@ export default function AttendancePage() {
   }, []);
 
   const analytics = useMemo(() => {
-    const base = {
-      "First Service": 0,
-      "Second Service": 0,
-      Rooftop: 0,
-      Male: 0,
-      Female: 0
-    } as Record<AttendanceGroup, number>;
-
-    const newcomerBase = {
-      "First Service": 0,
-      "Second Service": 0,
-      Rooftop: 0,
-      Male: 0,
-      Female: 0
-    } as Record<AttendanceGroup, number>;
+    const userNetworkMap = buildStudentNetworkMap(users);
+    const base = createEmptyNetworkCounts();
+    const newcomerBase = createEmptyNetworkCounts();
 
     for (const log of todayLogs) {
-      const key = getGroupKey(log);
+      const key = userNetworkMap.get(log.student_id);
       if (!key) continue;
       base[key] += 1;
       if (log.was_newcomer) newcomerBase[key] += 1;
@@ -120,7 +98,7 @@ export default function AttendancePage() {
       byGroup: base,
       newcomerByGroup: newcomerBase
     };
-  }, [todayLogs]);
+  }, [todayLogs, users]);
 
   useEffect(() => {
     let mounted = true;
@@ -137,20 +115,29 @@ export default function AttendancePage() {
         const settings = loadAppSettings();
         setNewcomerClearCount(settings.newcomerClearScanCount);
 
-        const { data, error } = await supabase
+        const usersResult = await supabase
           .from("users")
           .select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
 
-        if (error) throw error;
+        if (usersResult.error) throw usersResult.error;
 
-        const knownUsers = (data ?? []) as UserFace[];
+        const eventsResult = await supabase
+          .from("events")
+          .select("id, title, details, event_date, location, poster_url, created_at")
+          .order("event_date", { ascending: true });
+
+        if (!eventsResult.error) {
+          setEvents((eventsResult.data ?? []) as EventItem[]);
+        } else if (!isMissingEventsTableError(eventsResult.error.message)) {
+          throw eventsResult.error;
+        }
 
         const today = getTodayIsoDate();
         let attendanceRows: AttendanceLog[] = [];
 
         const attendanceResult = await supabase
           .from("attendance")
-          .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, attended_date, attended_at")
+          .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
           .eq("attended_date", today);
 
         if (attendanceResult.error) {
@@ -166,7 +153,8 @@ export default function AttendancePage() {
               ...row,
               was_newcomer: false,
               attendance_context: null,
-              attendance_group: null
+              attendance_group: null,
+              event_id: null
             }));
 
             if (mounted) {
@@ -181,7 +169,7 @@ export default function AttendancePage() {
         }
 
         if (mounted) {
-          setUsers(knownUsers);
+          setUsers((usersResult.data ?? []) as UserFace[]);
           attendanceMarkedRef.current = new Set(
             attendanceRows
               .filter((row) => row.attendance_context && row.attendance_group)
@@ -190,16 +178,15 @@ export default function AttendancePage() {
                   row.student_id,
                   row.attended_date,
                   row.attendance_context as AttendanceContext,
-                  row.attendance_group as AttendanceGroup
+                  row.attendance_group as AttendanceGroup,
+                  row.event_id ?? null
                 )
               )
           );
           setTodayLogs(attendanceRows);
           setIsReady(true);
-          if (!selectedContext || !selectedGroup) {
-            setStatusType("info");
-            setStatusMessage("Select attendance type and group before scanning.");
-          }
+          setStatusType("info");
+          setStatusMessage("Select attendance type and group before scanning.");
         }
       } catch (err: unknown) {
         console.error(err);
@@ -225,10 +212,17 @@ export default function AttendancePage() {
       return;
     }
 
+    if (selectedContext === "Events" && !selectedEventId) {
+      setStatusType("error");
+      setStatusMessage("Select an event for Events attendance before scanning.");
+      return;
+    }
+
     const today = getTodayIsoDate();
     const matchedUser = users.find((user) => user.student_id === studentId);
     const wasNewcomer = Boolean(matchedUser?.newcomer);
-    const attendanceKey = makeAttendanceKey(studentId, today, selectedContext, selectedGroup);
+    const eventIdForScan = selectedContext === "Events" ? selectedEventId : null;
+    const attendanceKey = makeAttendanceKey(studentId, today, selectedContext, selectedGroup, eventIdForScan);
 
     if (attendanceMarkedRef.current.has(attendanceKey)) {
       setStatusType("info");
@@ -243,6 +237,7 @@ export default function AttendancePage() {
       was_newcomer: wasNewcomer,
       attendance_context: selectedContext,
       attendance_group: selectedGroup,
+      event_id: eventIdForScan,
       attended_date: today,
       attended_at: new Date().toISOString()
     });
@@ -268,6 +263,7 @@ export default function AttendancePage() {
         was_newcomer: wasNewcomer,
         attendance_context: selectedContext,
         attendance_group: selectedGroup,
+        event_id: eventIdForScan,
         attended_date: today,
         attended_at: new Date().toISOString()
       },
@@ -295,7 +291,7 @@ export default function AttendancePage() {
     setStatusType("success");
     setStatusMessage(`Attendance marked for ${fullName} in ${selectedGroup}.`);
     setLatestMatch({ name: fullName, studentId, context: selectedContext, group: selectedGroup });
-  }, [newcomerClearCount, selectedContext, selectedGroup, users]);
+  }, [newcomerClearCount, selectedContext, selectedEventId, selectedGroup, users]);
 
   useEffect(() => {
     if (!isReady || users.length === 0) {
@@ -309,6 +305,12 @@ export default function AttendancePage() {
     if (!selectedContext || !selectedGroup) {
       setStatusType("info");
       setStatusMessage("Select attendance type and group before scanning.");
+      return;
+    }
+
+    if (selectedContext === "Events" && !selectedEventId) {
+      setStatusType("info");
+      setStatusMessage("Select an event for Events attendance before scanning.");
       return;
     }
 
@@ -368,7 +370,7 @@ export default function AttendancePage() {
     return () => {
       clearInterval(interval);
     };
-  }, [buildMatcher, isReady, markAttendance, selectedContext, selectedGroup, users]);
+  }, [buildMatcher, isReady, markAttendance, selectedContext, selectedEventId, selectedGroup, users]);
 
   return (
     <div className="space-y-6 reveal">
@@ -398,6 +400,7 @@ export default function AttendancePage() {
                 onClick={() => {
                   setSelectedContext(option);
                   setSelectedGroup(null);
+                  setSelectedEventId(null);
                 }}
                 className={selectedContext === option ? "btn-primary" : "btn-ghost"}
               >
@@ -424,26 +427,61 @@ export default function AttendancePage() {
           {!selectedContext ? <p className="mt-2 text-xs text-[#5f756c]">Choose attendance type first.</p> : null}
           {selectedContext && !selectedGroup ? <p className="mt-2 text-xs font-semibold text-[#35584c]">Now select a group to activate scanner.</p> : null}
         </div>
+
+        {selectedContext === "Events" ? (
+          <div>
+            <p className="field-label">Linked Event</p>
+            {events.length === 0 ? (
+              <p className="text-xs text-[#5f756c]">No events found. Create one in Event Manager first.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {events.map((event) => (
+                  <button
+                    key={event.id}
+                    type="button"
+                    onClick={() => setSelectedEventId(event.id)}
+                    className={selectedEventId === event.id ? "btn-primary" : "btn-ghost"}
+                    title={event.event_date ?? "No date"}
+                  >
+                    {event.title}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!selectedEventId ? <p className="mt-2 text-xs font-semibold text-[#35584c]">Select an event to link scanned attendance.</p> : null}
+          </div>
+        ) : null}
       </section>
 
       <section className="analytics-strip">
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Mode</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl font-semibold text-[#22322d]">Fast Scan</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">Fast Scan</p>
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Selected Group</p>
-          <p className="mt-2 font-[var(--font-heading)] text-xl font-semibold text-[#22322d]">{selectedGroup ?? "None"}</p>
+          <p className="mt-2 font-[var(--font-heading)] text-xl text-[#22322d]">{selectedGroup ?? "None"}</p>
         </article>
         <article className="analytics-card">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Scans Today</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl font-semibold text-[#22322d]">{analytics.scansToday}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Linked Event</p>
+          <p className="mt-2 font-[var(--font-heading)] text-xl text-[#22322d]">
+            {selectedContext === "Events" ? (events.find((event) => event.id === selectedEventId)?.title ?? "None") : "N/A"}
+          </p>
         </article>
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
         <div className="card bg-[#f8fbfa]">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#5a776b]">Live Attendance Feed</p>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#5a776b]">Live Attendance Feed</p>
+            <button
+              type="button"
+              className="btn-ghost px-3 py-1.5 text-xs"
+              onClick={() => setCameraFacingMode((prev) => (prev === "user" ? "environment" : "user"))}
+            >
+              Flip Camera
+            </button>
+          </div>
           <Webcam
             ref={webcamRef}
             audio={false}
@@ -453,7 +491,7 @@ export default function AttendancePage() {
               setStatusMessage("Camera permission denied or unavailable.");
             }}
             videoConstraints={{
-              facingMode: "user",
+              facingMode: cameraFacingMode,
               width: 960,
               height: 720
             }}
@@ -464,13 +502,13 @@ export default function AttendancePage() {
 
         <aside className="space-y-4">
           <div className="card space-y-3">
-            <h2 className="font-[var(--font-heading)] text-lg font-semibold text-[#23332d]">Scanner Status</h2>
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Scanner Status</h2>
             <div className={statusClass}>{statusMessage}</div>
             <p className="text-xs text-[#5f756c]">Distance threshold: 0.5</p>
           </div>
 
           <div className="card space-y-2">
-            <h2 className="font-[var(--font-heading)] text-lg font-semibold text-[#23332d]">Latest Match</h2>
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Latest Match</h2>
             {latestMatch ? (
               <div className="rounded-xl border border-[#a7c3b8] bg-[#e8f3ef] p-3 text-sm text-[#2f5b4c]">
                 <p className="font-semibold">{latestMatch.name}</p>
@@ -483,29 +521,28 @@ export default function AttendancePage() {
               <p className="text-sm text-[#4e655d]">No successful match yet.</p>
             )}
           </div>
-
         </aside>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <SimpleBarChart
-          title="Attendance by Group (Today)"
+          title="Attendance by Network (Today)"
           items={[
-            { label: "1st Service", value: analytics.byGroup["First Service"], color: GROUP_COLORS.firstService },
-            { label: "2nd Service", value: analytics.byGroup["Second Service"], color: GROUP_COLORS.secondService },
-            { label: "Rooftop", value: analytics.byGroup.Rooftop, color: GROUP_COLORS.rooftop },
-            { label: "Male", value: analytics.byGroup.Male, color: GROUP_COLORS.male },
-            { label: "Female", value: analytics.byGroup.Female, color: GROUP_COLORS.female }
+            { label: NETWORK_LABELS.kidsMinistry, value: analytics.byGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
+            { label: NETWORK_LABELS.youthMinistry, value: analytics.byGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
+            { label: NETWORK_LABELS.youngProfessionals, value: analytics.byGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
+            { label: NETWORK_LABELS.mensNetwork, value: analytics.byGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
+            { label: NETWORK_LABELS.womensNetwork, value: analytics.byGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
           ]}
         />
         <SimpleBarChart
-          title="Newcomer Attendance by Group"
+          title="Newcomer Attendance by Network"
           items={[
-            { label: "1st Service", value: analytics.newcomerByGroup["First Service"], color: GROUP_COLORS.firstService },
-            { label: "2nd Service", value: analytics.newcomerByGroup["Second Service"], color: GROUP_COLORS.secondService },
-            { label: "Rooftop", value: analytics.newcomerByGroup.Rooftop, color: GROUP_COLORS.rooftop },
-            { label: "Male", value: analytics.newcomerByGroup.Male, color: GROUP_COLORS.male },
-            { label: "Female", value: analytics.newcomerByGroup.Female, color: GROUP_COLORS.female }
+            { label: NETWORK_LABELS.kidsMinistry, value: analytics.newcomerByGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
+            { label: NETWORK_LABELS.youthMinistry, value: analytics.newcomerByGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
+            { label: NETWORK_LABELS.youngProfessionals, value: analytics.newcomerByGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
+            { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
+            { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
           ]}
         />
       </div>

@@ -16,7 +16,7 @@ export default function AnalyticsFunnel({ title, steps, emptyText = "No funnel d
 
   return (
     <section className="analytics-panel">
-      <h3 className="font-[var(--font-heading)] text-lg font-semibold text-[#24362f]">{title}</h3>
+      <h3 className="text-lg font-semibold text-[#24362f]">{title}</h3>
       {!hasData ? (
         <p className="mt-3 text-sm text-[#5d736a]">{emptyText}</p>
       ) : (

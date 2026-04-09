@@ -22,6 +22,7 @@ create table if not exists public.attendance (
   was_newcomer boolean not null default false,
   attendance_context text,
   attendance_group text,
+  event_id uuid,
   attended_date date not null,
   attended_at timestamptz not null default timezone('utc'::text, now()),
   constraint attendance_student_fk foreign key (student_id) references public.users(student_id) on update cascade on delete restrict,
@@ -31,6 +32,7 @@ create table if not exists public.attendance (
 alter table public.attendance add column if not exists was_newcomer boolean not null default false;
 alter table public.attendance add column if not exists attendance_context text;
 alter table public.attendance add column if not exists attendance_group text;
+alter table public.attendance add column if not exists event_id uuid;
 
 do $$
 begin
@@ -61,14 +63,25 @@ create table if not exists public.events (
   created_at timestamptz not null default timezone('utc'::text, now())
 );
 
+create table if not exists public.event_suggestions (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.events(id) on update cascade on delete cascade,
+  suggestion_text text not null,
+  created_at timestamptz not null default timezone('utc'::text, now())
+);
+
 create index if not exists attendance_attended_date_idx on public.attendance(attended_date);
 create index if not exists attendance_student_id_idx on public.attendance(student_id);
+create index if not exists attendance_event_id_idx on public.attendance(event_id);
 create index if not exists events_event_date_idx on public.events(event_date);
+create index if not exists event_suggestions_event_id_idx on public.event_suggestions(event_id);
+create unique index if not exists event_suggestions_event_text_unique_idx on public.event_suggestions(event_id, suggestion_text);
 
 -- Enable RLS if you need auth-aware policies.
 alter table public.users enable row level security;
 alter table public.attendance enable row level security;
 alter table public.events enable row level security;
+alter table public.event_suggestions enable row level security;
 
 -- Example permissive policies for development only.
 do $$
@@ -95,6 +108,15 @@ begin
     select 1 from pg_policies where schemaname = 'public' and tablename = 'events' and policyname = 'allow_all_events_dev'
   ) then
     create policy allow_all_events_dev on public.events
+      for all
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'event_suggestions' and policyname = 'allow_all_event_suggestions_dev'
+  ) then
+    create policy allow_all_event_suggestions_dev on public.event_suggestions
       for all
       using (true)
       with check (true);

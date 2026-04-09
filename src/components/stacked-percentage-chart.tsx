@@ -2,11 +2,11 @@ import { GROUP_COLORS, GROUP_SHORT_LABELS } from "@/lib/analytics-colors";
 
 type MixRow = {
   label: string;
-  firstService: number;
-  secondService: number;
-  rooftop: number;
-  male: number;
-  female: number;
+  kidsMinistry: number;
+  youthMinistry: number;
+  youngProfessionals: number;
+  mensNetwork: number;
+  womensNetwork: number;
 };
 
 type Props = {
@@ -16,19 +16,21 @@ type Props = {
 };
 
 const SEGMENTS = [
-  { key: "firstService", color: GROUP_COLORS.firstService, short: GROUP_SHORT_LABELS.firstService },
-  { key: "secondService", color: GROUP_COLORS.secondService, short: GROUP_SHORT_LABELS.secondService },
-  { key: "rooftop", color: GROUP_COLORS.rooftop, short: GROUP_SHORT_LABELS.rooftop },
-  { key: "male", color: GROUP_COLORS.male, short: GROUP_SHORT_LABELS.male },
-  { key: "female", color: GROUP_COLORS.female, short: GROUP_SHORT_LABELS.female }
+  { key: "kidsMinistry", color: GROUP_COLORS.kidsMinistry, short: GROUP_SHORT_LABELS.kidsMinistry },
+  { key: "youthMinistry", color: GROUP_COLORS.youthMinistry, short: GROUP_SHORT_LABELS.youthMinistry },
+  { key: "youngProfessionals", color: GROUP_COLORS.youngProfessionals, short: GROUP_SHORT_LABELS.youngProfessionals },
+  { key: "mensNetwork", color: GROUP_COLORS.mensNetwork, short: GROUP_SHORT_LABELS.mensNetwork },
+  { key: "womensNetwork", color: GROUP_COLORS.womensNetwork, short: GROUP_SHORT_LABELS.womensNetwork }
 ] as const;
 
 export default function StackedPercentageChart({ title, rows, emptyText = "No composition data yet." }: Props) {
-  const hasData = rows.some((row) => row.firstService + row.secondService + row.rooftop + row.male + row.female > 0);
+  const hasData = rows.some(
+    (row) => row.kidsMinistry + row.youthMinistry + row.youngProfessionals + row.mensNetwork + row.womensNetwork > 0
+  );
 
   return (
     <section className="analytics-panel">
-      <h3 className="font-[var(--font-heading)] text-lg font-semibold text-[#24362f]">{title}</h3>
+      <h3 className="text-lg font-semibold text-[#24362f]">{title}</h3>
       {!hasData ? (
         <p className="mt-3 text-sm text-[#5d736a]">{emptyText}</p>
       ) : (
@@ -43,7 +45,7 @@ export default function StackedPercentageChart({ title, rows, emptyText = "No co
           </div>
           <div className="mt-4 grid gap-3">
             {rows.map((row) => {
-              const total = row.firstService + row.secondService + row.rooftop + row.male + row.female;
+              const total = row.kidsMinistry + row.youthMinistry + row.youngProfessionals + row.mensNetwork + row.womensNetwork;
 
               return (
                 <div key={row.label} className="grid grid-cols-[78px_1fr_38px] items-center gap-2 text-xs md:text-sm">
