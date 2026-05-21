@@ -11,7 +11,7 @@ import AnalyticsFunnel from "@/components/analytics-funnel";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
-type AnalyticsView = "mix" | "funnel";
+type AnalyticsView = "mix" | "eventAttendance" | "funnel";
 const MIN_ANALYTICS_DATE = "2026-01-01";
 const POLL_QUESTION_PREFIX = "[POLL_Q] ";
 const POLL_CHOICE_PREFIX = "[POLL_C] ";
@@ -48,6 +48,7 @@ export default function HomePage() {
   const [status, setStatus] = useState("Loading dashboard analytics...");
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
   const [suggestionStatus, setSuggestionStatus] = useState("");
+  const pollSaved = suggestionStatus.toLowerCase().includes("poll saved");
 
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null;
 
@@ -81,6 +82,14 @@ export default function HomePage() {
     const day = format(today);
     return { from: day < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : day, to: day };
   }, []);
+
+  const eventTitleById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const event of events) {
+      map[event.id] = event.title;
+    }
+    return map;
+  }, [events]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -119,7 +128,7 @@ export default function HomePage() {
       let attendanceRows: AttendanceLog[] = [];
       const attendanceResult = await supabase
         .from("attendance")
-        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, attended_date, attended_at")
+        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
         .gte("attended_date", range.from)
         .lte("attended_date", range.to);
 
@@ -130,7 +139,7 @@ export default function HomePage() {
         ) {
           const fallback = await supabase
             .from("attendance")
-            .select("id, student_id, full_name, attended_date, attended_at")
+            .select("id, student_id, full_name, event_id, attended_date, attended_at")
             .gte("attended_date", range.from)
             .lte("attended_date", range.to);
 
@@ -143,7 +152,8 @@ export default function HomePage() {
             ...row,
             was_newcomer: false,
             attendance_context: null,
-            attendance_group: null
+              attendance_group: null,
+              event_id: null
           }));
           warnings.push("Attendance schema is outdated. Run supabase/schema.sql to add was_newcomer, attendance_context, and attendance_group.");
         } else {
@@ -253,6 +263,37 @@ export default function HomePage() {
         ...row
       }));
   }, [attendance, userNetworkMap]);
+
+  const eventAttendanceItems = useMemo(() => {
+    const counts: Record<string, number> = {
+      "First Service": 0,
+      "Second Service": 0,
+      "Prayer Meeting": 0,
+      Rooftop: 0,
+      "Men's Network": 0,
+      "Women's Network": 0
+    };
+
+    for (const scan of attendance) {
+      const normalizedGroup = scan.attendance_group === "Male"
+        ? "Men's Network"
+        : scan.attendance_group === "Female"
+          ? "Women's Network"
+          : scan.attendance_group;
+
+      if (!normalizedGroup || !(normalizedGroup in counts)) continue;
+      counts[normalizedGroup] += 1;
+    }
+
+    return [
+      { label: "First Service", value: counts["First Service"], color: "#2563eb" },
+      { label: "Second Service", value: counts["Second Service"], color: "#0ea5e9" },
+      { label: "Prayer Meeting", value: counts["Prayer Meeting"], color: "#f59e0b" },
+      { label: "Rooftop", value: counts.Rooftop, color: "#8b5cf6" },
+      { label: "Men's Network", value: counts["Men's Network"], color: "#10b981" },
+      { label: "Women's Network", value: counts["Women's Network"], color: "#ef4444" }
+    ];
+  }, [attendance]);
 
   const funnelSteps = useMemo(() => {
     const studentScanCounts = new Map<string, number>();
@@ -403,6 +444,7 @@ export default function HomePage() {
         <section className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => setAnalyticsView("mix")} className={analyticsView === "mix" ? "btn-primary" : "btn-ghost"}>Network Attendance</button>
+            <button type="button" onClick={() => setAnalyticsView("eventAttendance")} className={analyticsView === "eventAttendance" ? "btn-primary" : "btn-ghost"}>Event Attendance</button>
             <button type="button" onClick={() => setAnalyticsView("funnel")} className={analyticsView === "funnel" ? "btn-primary" : "btn-ghost"}>Funnel</button>
           </div>
 
@@ -410,8 +452,47 @@ export default function HomePage() {
             <StackedPercentageChart title="Daily Network Attendance" rows={timelineRows} emptyText="No network attendance data yet." />
           ) : null}
 
+          {analyticsView === "eventAttendance" ? (
+            <SimpleBarChart title="Daily Event Attendance" items={eventAttendanceItems} emptyText="No event attendance data yet." />
+          ) : null}
+
           {analyticsView === "funnel" ? (
             <AnalyticsFunnel title="Attendance Funnel" steps={funnelSteps} emptyText="No funnel data yet." />
+          ) : null}
+
+          {analyticsView === "eventAttendance" ? (
+            <section className="analytics-panel">
+              <h3 className="font-[var(--font-heading)] text-lg text-[#24362f]">Attendance Logs with Date and Event</h3>
+              <div className="mt-3 space-y-2">
+                {attendance.length === 0 ? (
+                  <p className="text-sm text-[#5d736a]">No attendance rows for today.</p>
+                ) : (
+                  attendance
+                    .slice()
+                    .sort((a, b) => b.attended_at.localeCompare(a.attended_at))
+                    .slice(0, 12)
+                    .map((row) => {
+                      const normalizedGroup = row.attendance_group === "Male"
+                        ? "Men's Network"
+                        : row.attendance_group === "Female"
+                          ? "Women's Network"
+                          : row.attendance_group;
+
+                      return (
+                        <div key={row.id} className="rounded-xl border border-[#cbd8d3] bg-white px-3 py-2 text-sm text-[#2f4d43]">
+                          <p className="font-semibold">{row.full_name}</p>
+                          <p className="text-xs text-[#5e766c]">
+                            {row.attended_date} • {new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                          <p className="text-xs text-[#5e766c]">
+                            {normalizedGroup ?? "-"} • {row.event_id ? (eventTitleById[row.event_id] ?? "Linked Event") : "No Event"}
+                          </p>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </section>
           ) : null}
         </section>
 
@@ -474,6 +555,11 @@ export default function HomePage() {
                     Active Event
                   </span>
                 ) : null}
+                {selectedEvent && pollSaved ? (
+                  <span className="rounded-full border border-[#a7c3b8] bg-[#eaf4ef] px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2f5b4c]">
+                    Poll Saved
+                  </span>
+                ) : null}
               </div>
               {!selectedEvent ? (
                 <p className="mt-2 text-sm text-[#4f675e]">Click an event card to view details and suggestions.</p>
@@ -501,19 +587,25 @@ export default function HomePage() {
                         className="field-input"
                         value={pollQuestionInput}
                         onChange={(event) => setPollQuestionInput(event.target.value)}
+                        maxLength={120}
                         placeholder="Poll question (e.g. What should we focus on next event?)"
                       />
+                      <p className="text-[11px] text-[#5e766c]">Max 120 characters.</p>
                       <textarea
                         className="field-input min-h-[88px]"
                         value={pollChoicesInput}
                         onChange={(event) => setPollChoicesInput(event.target.value)}
+                        maxLength={320}
                         placeholder={"Choices (comma-separated or one per line)\nExample:\nPrayer\nNetworking\nGames"}
                       />
+                      <p className="text-[11px] text-[#5e766c]">Enter at least 2 choices. Max 320 characters total.</p>
                       <button type="submit" className="btn-primary md:min-w-[120px]">
                         Save Poll
                       </button>
                     </form>
                   </div>
+
+                  <div className="border-t border-dashed border-[#c6d5cf]" />
 
                   <form
                     className="flex flex-col gap-2 md:flex-row"
@@ -540,7 +632,16 @@ export default function HomePage() {
                       <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#577067]">Current Poll</p>
                       <div className="mt-1 flex items-start justify-between gap-3">
                         <p className="font-semibold text-[#294a3e]">{selectedEventPollQuestion.suggestion_text.replace(POLL_QUESTION_PREFIX, "")}</p>
-                        <button type="button" className="rounded-full border border-[#d9b6ba] px-3 py-1 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]" onClick={() => void removeSuggestion(selectedEventPollQuestion.id)}>
+                        <button
+                          type="button"
+                          className="rounded-full border border-[#d9b6ba] px-3 py-1 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]"
+                          onClick={() => {
+                            const ok = window.confirm("Remove the current poll question and all choices?");
+                            if (ok) {
+                              void removeSuggestion(selectedEventPollQuestion.id);
+                            }
+                          }}
+                        >
                           Remove
                         </button>
                       </div>

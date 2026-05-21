@@ -2,25 +2,60 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Webcam from "react-webcam";
+import Link from "next/link";
 import * as faceapi from "face-api.js";
 import { getFaceDetectorOptions, loadFaceApiModels } from "@/lib/faceApi";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { AttendanceLog, EventItem, UserFace } from "@/types";
 import { loadAppSettings } from "@/lib/app-settings";
+import { extractLivenessMetrics, LivenessGate } from "@/lib/liveness";
 import SimpleBarChart from "@/components/simple-bar-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type ScannerStatusType = "info" | "success" | "error";
 type AttendanceContext = "Sunday Service" | "Events";
-type AttendanceGroup = "First Service" | "Second Service" | "Rooftop" | "Male" | "Female";
+type AttendanceGroup = "First Service" | "Second Service" | "Prayer Meeting" | "Rooftop" | "Men's Network" | "Women's Network";
+type DetectionWithDescriptor = {
+  descriptor: Float32Array;
+  landmarks: {
+    getLeftEye?: () => Array<{ x: number; y: number }>;
+    getRightEye?: () => Array<{ x: number; y: number }>;
+    getNose?: () => Array<{ x: number; y: number }>;
+  };
+  detection: { box: { x: number; width: number } };
+};
 
 const contextOptions: AttendanceContext[] = ["Sunday Service", "Events"];
 
 const groupOptions: Record<AttendanceContext, AttendanceGroup[]> = {
-  "Sunday Service": ["First Service", "Second Service"],
-  Events: ["Rooftop", "Male", "Female"]
+  "Sunday Service": ["First Service", "Second Service", "Prayer Meeting"],
+  Events: ["Rooftop", "Men's Network", "Women's Network"]
 };
+
+function normalizeAttendanceGroup(label: string | null) {
+  if (label === "Male") return "Men's Network";
+  if (label === "Female") return "Women's Network";
+  return label;
+}
+
+const EVENT_ATTENDANCE_GROUPS: Array<{ label: AttendanceGroup; color: string }> = [
+  { label: "First Service", color: "#2563eb" },
+  { label: "Second Service", color: "#0ea5e9" },
+  { label: "Prayer Meeting", color: "#f59e0b" },
+  { label: "Rooftop", color: "#8b5cf6" },
+  { label: "Men's Network", color: "#10b981" },
+  { label: "Women's Network", color: "#ef4444" }
+];
+
+const FACE_DISTANCE_THRESHOLD = 0.42;
+const FACE_AMBIGUITY_GAP = 0.04;
+const MATCH_CONFIRMATION_FRAMES = 3;
+const MIN_FACE_BOX_WIDTH_PX = 140;
+const AUTO_MARK_COOLDOWN_MS = 8000;
+const LIVENESS_TIMEOUT_MS = 12000;
+const NO_FACE_RESET_MS = 5000;
+const STATUS_COOLDOWN_MS = 1200;
 
 function getTodayIsoDate() {
   return new Date().toISOString().slice(0, 10);
@@ -38,10 +73,51 @@ function makeAttendanceKey(studentId: string, date: string, context: AttendanceC
   return `${studentId}|${date}|${context}|${group}|${eventId ?? "none"}`;
 }
 
+function isTransientSupabaseError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const payload = error as { message?: string; status?: number; code?: string };
+  const message = payload.message?.toLowerCase() ?? "";
+  const status = payload.status ?? 0;
+
+  return (
+    status === 0 ||
+    status === 429 ||
+    status >= 500 ||
+    payload.code === "ECONNRESET" ||
+    payload.code === "ETIMEDOUT" ||
+    message.includes("network") ||
+    message.includes("timeout") ||
+    message.includes("fetch")
+  );
+}
+
+async function withSupabaseRetry<T>(action: () => PromiseLike<T>, attempts = 3) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await action();
+    } catch (err) {
+      lastError = err;
+      if (!isTransientSupabaseError(err) || attempt === attempts - 1) {
+        throw err;
+      }
+      const delay = 500 + attempt * 700;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
+
 export default function AttendancePage() {
   const webcamRef = useRef<Webcam | null>(null);
   const attendanceMarkedRef = useRef<Set<string>>(new Set());
   const scanInProgressRef = useRef(false);
+  const stableMatchRef = useRef<{ key: string; frames: number }>({ key: "", frames: 0 });
+  const autoMarkCooldownRef = useRef<Map<string, number>>(new Map());
+  const livenessGateRef = useRef(new LivenessGate());
+  const noFaceSinceRef = useRef<number | null>(null);
+  const lastStatusRef = useRef<{ type: ScannerStatusType; message: string; at: number } | null>(null);
 
   const [statusType, setStatusType] = useState<ScannerStatusType>("info");
   const [statusMessage, setStatusMessage] = useState("Loading models and known face descriptors...");
@@ -49,6 +125,7 @@ export default function AttendancePage() {
   const [users, setUsers] = useState<UserFace[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [todayLogs, setTodayLogs] = useState<AttendanceLog[]>([]);
+  const [selectedDate, setSelectedDate] = useState(getTodayIsoDate());
   const [newcomerClearCount, setNewcomerClearCount] = useState<1 | 2>(2);
   const [selectedContext, setSelectedContext] = useState<AttendanceContext | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<AttendanceGroup | null>(null);
@@ -62,23 +139,13 @@ export default function AttendancePage() {
     return "status-info";
   }, [statusType]);
 
-  const buildMatcher = useCallback((knownUsers: UserFace[]) => {
-    const labeledDescriptors = knownUsers
-      .filter((u) => Array.isArray(u.descriptor) && u.descriptor.length > 0)
-      .map(
-        (u) =>
-          new faceapi.LabeledFaceDescriptors(
-            `${u.student_id}::${u.full_name}`,
-            [new Float32Array(u.descriptor)]
-          )
-      );
-
-    if (!labeledDescriptors.length) {
-      return null;
-    }
-
-    return new faceapi.FaceMatcher(labeledDescriptors, 0.5);
-  }, []);
+  const knownDescriptors = useMemo(
+    () =>
+      users
+        .filter((u) => Array.isArray(u.descriptor) && u.descriptor.length > 0)
+        .map((u) => ({ user: u, descriptor: new Float32Array(u.descriptor) })),
+    [users]
+  );
 
   const analytics = useMemo(() => {
     const userNetworkMap = buildStudentNetworkMap(users);
@@ -99,6 +166,78 @@ export default function AttendancePage() {
       newcomerByGroup: newcomerBase
     };
   }, [todayLogs, users]);
+
+  const eventAttendanceCounts = useMemo(() => {
+    const counts: Record<AttendanceGroup, number> = {
+      "First Service": 0,
+      "Second Service": 0,
+      "Prayer Meeting": 0,
+      Rooftop: 0,
+      "Men's Network": 0,
+      "Women's Network": 0
+    };
+
+    for (const log of todayLogs) {
+      const group = normalizeAttendanceGroup(log.attendance_group) as AttendanceGroup | null;
+      if (!group || !(group in counts)) continue;
+      counts[group] += 1;
+    }
+
+    return EVENT_ATTENDANCE_GROUPS.map((entry) => ({
+      label: entry.label,
+      value: counts[entry.label],
+      color: entry.color
+    }));
+  }, [todayLogs]);
+
+  const loadLogsForDate = useCallback(async (date: string) => {
+    let attendanceRows: AttendanceLog[] = [];
+
+    const attendanceResult = await withSupabaseRetry(() =>
+      supabase
+        .from("attendance")
+        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
+        .eq("attended_date", date)
+    );
+
+    if (attendanceResult.error) {
+      if (isMissingClassificationColumnError(attendanceResult.error.message)) {
+        const fallback = await supabase
+          .from("attendance")
+          .select("id, student_id, full_name, was_newcomer, attended_date, attended_at")
+          .eq("attended_date", date);
+
+        if (fallback.error) throw fallback.error;
+
+        attendanceRows = ((fallback.data ?? []) as Array<Omit<AttendanceLog, "was_newcomer" | "attendance_context" | "attendance_group">>).map((row) => ({
+          ...row,
+          was_newcomer: false,
+          attendance_context: null,
+          attendance_group: null,
+          event_id: null
+        }));
+      } else {
+        throw attendanceResult.error;
+      }
+    } else {
+      attendanceRows = (attendanceResult.data ?? []) as AttendanceLog[];
+    }
+
+    attendanceMarkedRef.current = new Set(
+      attendanceRows
+        .filter((row) => row.attendance_context && row.attendance_group)
+        .map((row) =>
+          makeAttendanceKey(
+            row.student_id,
+            row.attended_date,
+            row.attendance_context as AttendanceContext,
+            normalizeAttendanceGroup(row.attendance_group) as AttendanceGroup,
+            row.event_id ?? null
+          )
+        )
+    );
+    setTodayLogs(attendanceRows);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -132,61 +271,13 @@ export default function AttendancePage() {
           throw eventsResult.error;
         }
 
-        const today = getTodayIsoDate();
-        let attendanceRows: AttendanceLog[] = [];
-
-        const attendanceResult = await supabase
-          .from("attendance")
-          .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
-          .eq("attended_date", today);
-
-        if (attendanceResult.error) {
-          if (isMissingClassificationColumnError(attendanceResult.error.message)) {
-            const fallback = await supabase
-              .from("attendance")
-              .select("id, student_id, full_name, was_newcomer, attended_date, attended_at")
-              .eq("attended_date", today);
-
-            if (fallback.error) throw fallback.error;
-
-            attendanceRows = ((fallback.data ?? []) as Array<Omit<AttendanceLog, "was_newcomer" | "attendance_context" | "attendance_group">>).map((row) => ({
-              ...row,
-              was_newcomer: false,
-              attendance_context: null,
-              attendance_group: null,
-              event_id: null
-            }));
-
-            if (mounted) {
-              setStatusType("info");
-              setStatusMessage("Attendance categories are not in DB yet. Run supabase/schema.sql to enable service/event analytics.");
-            }
-          } else {
-            throw attendanceResult.error;
-          }
-        } else {
-          attendanceRows = (attendanceResult.data ?? []) as AttendanceLog[];
-        }
+        await loadLogsForDate(getTodayIsoDate());
 
         if (mounted) {
           setUsers((usersResult.data ?? []) as UserFace[]);
-          attendanceMarkedRef.current = new Set(
-            attendanceRows
-              .filter((row) => row.attendance_context && row.attendance_group)
-              .map((row) =>
-                makeAttendanceKey(
-                  row.student_id,
-                  row.attended_date,
-                  row.attendance_context as AttendanceContext,
-                  row.attendance_group as AttendanceGroup,
-                  row.event_id ?? null
-                )
-              )
-          );
-          setTodayLogs(attendanceRows);
           setIsReady(true);
           setStatusType("info");
-          setStatusMessage("Select attendance type and group before scanning.");
+          setStatusMessage("Select attendance type, group, date, and optional event before scanning.");
         }
       } catch (err: unknown) {
         console.error(err);
@@ -203,7 +294,18 @@ export default function AttendancePage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [loadLogsForDate]);
+
+  useEffect(() => {
+    if (!isReady) return;
+
+    void loadLogsForDate(selectedDate).catch((err: unknown) => {
+      console.error(err);
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      setStatusType("error");
+      setStatusMessage(`Failed to load attendance for date: ${errorMessage}`);
+    });
+  }, [isReady, loadLogsForDate, selectedDate]);
 
   const markAttendance = useCallback(async (studentId: string, fullName: string) => {
     if (!selectedContext || !selectedGroup) {
@@ -218,11 +320,11 @@ export default function AttendancePage() {
       return;
     }
 
-    const today = getTodayIsoDate();
+    const attendanceDate = selectedDate;
     const matchedUser = users.find((user) => user.student_id === studentId);
     const wasNewcomer = Boolean(matchedUser?.newcomer);
     const eventIdForScan = selectedContext === "Events" ? selectedEventId : null;
-    const attendanceKey = makeAttendanceKey(studentId, today, selectedContext, selectedGroup, eventIdForScan);
+    const attendanceKey = makeAttendanceKey(studentId, attendanceDate, selectedContext, selectedGroup, eventIdForScan);
 
     if (attendanceMarkedRef.current.has(attendanceKey)) {
       setStatusType("info");
@@ -231,16 +333,18 @@ export default function AttendancePage() {
       return;
     }
 
-    const { error } = await supabase.from("attendance").insert({
-      student_id: studentId,
-      full_name: fullName,
-      was_newcomer: wasNewcomer,
-      attendance_context: selectedContext,
-      attendance_group: selectedGroup,
-      event_id: eventIdForScan,
-      attended_date: today,
-      attended_at: new Date().toISOString()
-    });
+    const { error } = await withSupabaseRetry(() =>
+      supabase.from("attendance").insert({
+        student_id: studentId,
+        full_name: fullName,
+        was_newcomer: wasNewcomer,
+        attendance_context: selectedContext,
+        attendance_group: selectedGroup,
+        event_id: eventIdForScan,
+        attended_date: attendanceDate,
+        attended_at: new Date().toISOString()
+      })
+    );
 
     if (error) {
       if (error.code === "23505") {
@@ -264,7 +368,7 @@ export default function AttendancePage() {
         attendance_context: selectedContext,
         attendance_group: selectedGroup,
         event_id: eventIdForScan,
-        attended_date: today,
+        attended_date: attendanceDate,
         attended_at: new Date().toISOString()
       },
       ...prev
@@ -291,7 +395,7 @@ export default function AttendancePage() {
     setStatusType("success");
     setStatusMessage(`Attendance marked for ${fullName} in ${selectedGroup}.`);
     setLatestMatch({ name: fullName, studentId, context: selectedContext, group: selectedGroup });
-  }, [newcomerClearCount, selectedContext, selectedEventId, selectedGroup, users]);
+  }, [newcomerClearCount, selectedContext, selectedDate, selectedEventId, selectedGroup, users]);
 
   useEffect(() => {
     if (!isReady || users.length === 0) {
@@ -301,6 +405,8 @@ export default function AttendancePage() {
       }
       return;
     }
+
+    livenessGateRef.current.reset();
 
     if (!selectedContext || !selectedGroup) {
       setStatusType("info");
@@ -314,18 +420,36 @@ export default function AttendancePage() {
       return;
     }
 
-    const matcher = buildMatcher(users);
-    if (!matcher) {
+    if (knownDescriptors.length === 0) {
       setStatusType("error");
       setStatusMessage("No valid descriptors found. Re-register users.");
       return;
     }
 
+    const setStatus = (type: ScannerStatusType, message: string) => {
+      const now = Date.now();
+      const last = lastStatusRef.current;
+      const shouldUpdate =
+        !last ||
+        last.type !== type ||
+        last.message !== message ||
+        now - last.at > STATUS_COOLDOWN_MS;
+
+      if (shouldUpdate) {
+        lastStatusRef.current = { type, message, at: now };
+        setStatusType(type);
+        setStatusMessage(message);
+      }
+    };
+
     const interval = setInterval(() => {
       if (scanInProgressRef.current) return;
 
       const video = webcamRef.current?.video as HTMLVideoElement | undefined;
-      if (!video || video.readyState < 2) return;
+      if (!video || video.readyState < 2) {
+        setStatus("info", "Waiting for camera feed...");
+        return;
+      }
 
       scanInProgressRef.current = true;
 
@@ -333,34 +457,114 @@ export default function AttendancePage() {
         .detectAllFaces(video, getFaceDetectorOptions())
         .withFaceLandmarks()
         .withFaceDescriptors()
-        .then(async (detections: Array<{ descriptor: Float32Array }>) => {
+        .then(async (detections: DetectionWithDescriptor[]) => {
           if (detections.length === 0) {
-            setStatusType("info");
-            setStatusMessage("No face detected.");
+            stableMatchRef.current = { key: "", frames: 0 };
+            livenessGateRef.current.reset();
+            const now = Date.now();
+            if (!noFaceSinceRef.current) {
+              noFaceSinceRef.current = now;
+            }
+            if (noFaceSinceRef.current && now - noFaceSinceRef.current > NO_FACE_RESET_MS) {
+              noFaceSinceRef.current = now;
+            }
+            setStatus("info", "No face detected.");
             return;
           }
 
           if (detections.length > 1) {
-            setStatusType("error");
-            setStatusMessage("Multiple faces detected. Please keep one face visible.");
+            stableMatchRef.current = { key: "", frames: 0 };
+            livenessGateRef.current.reset();
+            noFaceSinceRef.current = null;
+            setStatus("error", "Multiple faces detected. Please keep one face visible.");
             return;
           }
 
-          const bestMatch = matcher.findBestMatch(detections[0].descriptor);
-
-          if (bestMatch.label === "unknown" || bestMatch.distance > 0.5) {
-            setStatusType("error");
-            setStatusMessage("Low confidence match. Try moving closer to camera.");
+          const detection = detections[0];
+          if (detection.detection.box.width < MIN_FACE_BOX_WIDTH_PX) {
+            stableMatchRef.current = { key: "", frames: 0 };
+            livenessGateRef.current.reset();
+            noFaceSinceRef.current = null;
+            setStatus("info", "Face is too far. Move closer to the camera.");
             return;
           }
 
-          const [studentId, fullName] = bestMatch.label.split("::");
-          await markAttendance(studentId, fullName);
+          noFaceSinceRef.current = null;
+
+          const metrics = extractLivenessMetrics(detection.landmarks, detection.detection.box);
+          if (!metrics) {
+            setStatus("info", "Hold still so liveness can be verified.");
+            return;
+          }
+
+          const gate = livenessGateRef.current;
+          gate.update(metrics);
+          if (!gate.hasPassed()) {
+            if (gate.getElapsedMs() > LIVENESS_TIMEOUT_MS) {
+              gate.reset();
+            }
+            setStatus("info", "Liveness check: blink and gently turn your head.");
+            return;
+          }
+
+          const ranked = knownDescriptors
+            .map((entry) => ({
+              ...entry,
+              distance: faceapi.euclideanDistance(detection.descriptor, entry.descriptor)
+            }))
+            .sort((a, b) => a.distance - b.distance);
+
+          const best = ranked[0];
+          const second = ranked[1];
+
+          if (!best || best.distance > FACE_DISTANCE_THRESHOLD) {
+            stableMatchRef.current = { key: "", frames: 0 };
+            livenessGateRef.current.reset();
+            setStatus("error", "Low confidence match. Try moving closer to camera.");
+            return;
+          }
+
+          if (second && second.distance - best.distance < FACE_AMBIGUITY_GAP) {
+            stableMatchRef.current = { key: "", frames: 0 };
+            livenessGateRef.current.reset();
+            setStatus("error", "Ambiguous match detected. Hold still and face the camera directly.");
+            return;
+          }
+
+          const matchKey = `${best.user.student_id}|${best.user.full_name}`;
+          if (stableMatchRef.current.key === matchKey) {
+            stableMatchRef.current.frames += 1;
+          } else {
+            stableMatchRef.current = { key: matchKey, frames: 1 };
+          }
+
+          if (stableMatchRef.current.frames < MATCH_CONFIRMATION_FRAMES) {
+            setStatus("info", `Matched ${best.user.full_name}. Hold steady for auto-save...`);
+            return;
+          }
+
+          const eventIdForScan = selectedContext === "Events" ? selectedEventId : null;
+          const scanKey = makeAttendanceKey(
+            best.user.student_id,
+            selectedDate,
+            selectedContext,
+            selectedGroup,
+            eventIdForScan
+          );
+          const now = Date.now();
+          const lastMarkTs = autoMarkCooldownRef.current.get(scanKey) ?? 0;
+          if (now - lastMarkTs < AUTO_MARK_COOLDOWN_MS) {
+            return;
+          }
+
+          autoMarkCooldownRef.current.set(scanKey, now);
+          setStatus("info", `Matched ${best.user.full_name}. Saving attendance automatically...`);
+          await markAttendance(best.user.student_id, best.user.full_name);
+          livenessGateRef.current.reset();
         })
         .catch((err: unknown) => {
           console.error(err);
-          setStatusType("error");
-          setStatusMessage("Error during face scan.");
+          setStatus("error", "Error during face scan.");
         })
         .finally(() => {
           scanInProgressRef.current = false;
@@ -370,7 +574,7 @@ export default function AttendancePage() {
     return () => {
       clearInterval(interval);
     };
-  }, [buildMatcher, isReady, markAttendance, selectedContext, selectedEventId, selectedGroup, users]);
+  }, [isReady, knownDescriptors, markAttendance, selectedContext, selectedDate, selectedEventId, selectedGroup, users.length]);
 
   return (
     <div className="space-y-6 reveal">
@@ -379,10 +583,43 @@ export default function AttendancePage() {
         <p className="page-subtitle">Select the active service/event group, then scan faces in real time.</p>
       </section>
 
+      {!hasSupabaseEnv ? (
+        <div className="card status-error">
+          Supabase environment values are missing. Update <span className="font-semibold">.env.local</span> and restart the dev server.
+        </div>
+      ) : null}
+
+      {isReady && users.length === 0 ? (
+        <div className="card status-info">
+          No registered users yet. Go to <Link href="/register" className="font-semibold underline">User Registration</Link> to add members.
+        </div>
+      ) : null}
+
+      {selectedContext === "Events" && events.length === 0 ? (
+        <div className="card status-info">
+          No events found. Create one in <Link href="/events-manager" className="font-semibold underline">Event Manager</Link> to link event attendance.
+        </div>
+      ) : null}
+
       <section className="card scan-focus-panel space-y-4">
         <p className="rounded-xl border border-[#98b6aa] bg-[#e7f1ed] px-4 py-3 text-base font-semibold text-[#25493e] md:text-lg">
           Select attendance type and group before scanning.
         </p>
+
+        <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+          <div>
+            <p className="field-label">Attendance Date</p>
+            <input
+              type="date"
+              className="field-input max-w-[220px]"
+              value={selectedDate}
+              onChange={(event) => setSelectedDate(event.target.value)}
+            />
+          </div>
+          <button type="button" className="btn-ghost w-fit" onClick={() => setSelectedDate(getTodayIsoDate())}>
+            Use Today
+          </button>
+        </div>
 
         <div className="flex items-center justify-between gap-3">
           <p className="field-label mb-0">Attendance Type</p>
@@ -451,6 +688,10 @@ export default function AttendancePage() {
             {!selectedEventId ? <p className="mt-2 text-xs font-semibold text-[#35584c]">Select an event to link scanned attendance.</p> : null}
           </div>
         ) : null}
+
+        <p className="text-xs text-[#4f675e]">
+          Auto-save is active. Keep one clear face in frame and attendance will be saved automatically.
+        </p>
       </section>
 
       <section className="analytics-strip">
@@ -504,7 +745,9 @@ export default function AttendancePage() {
           <div className="card space-y-3">
             <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Scanner Status</h2>
             <div className={statusClass}>{statusMessage}</div>
-            <p className="text-xs text-[#5f756c]">Distance threshold: 0.5</p>
+            <p className="text-xs text-[#5f756c]">
+              Distance threshold: {FACE_DISTANCE_THRESHOLD} • Stable frames: {MATCH_CONFIRMATION_FRAMES}
+            </p>
           </div>
 
           <div className="card space-y-2">
@@ -526,7 +769,7 @@ export default function AttendancePage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <SimpleBarChart
-          title="Attendance by Network (Today)"
+          title={`Attendance by Network (Date: ${selectedDate}${selectedDate === getTodayIsoDate() ? " • Today" : ""})`}
           items={[
             { label: NETWORK_LABELS.kidsMinistry, value: analytics.byGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
             { label: NETWORK_LABELS.youthMinistry, value: analytics.byGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
@@ -544,6 +787,11 @@ export default function AttendancePage() {
             { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
             { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
           ]}
+        />
+        <SimpleBarChart
+          title={`Event Attendance Breakdown (Date: ${selectedDate}${selectedDate === getTodayIsoDate() ? " • Today" : ""})`}
+          items={eventAttendanceCounts}
+          emptyText="No event attendance data yet for selected date."
         />
       </div>
     </div>

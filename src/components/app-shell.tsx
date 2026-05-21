@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
@@ -204,11 +205,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <aside className="app-rail hidden md:flex">
         <div className="app-rail__brand app-rail__brand--logo">
           {!logoFailed ? (
-            <img
+            <Image
               src="/logo.png"
               alt="MyPresence logo"
+              width={48}
+              height={48}
               className="app-rail__brand-image"
               onError={() => setLogoFailed(true)}
+              priority
             />
           ) : (
             <span>MP</span>
@@ -237,11 +241,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-8">
             <div className="flex items-center gap-3">
               {!logoFailed ? (
-                <img
+                <Image
                   src="/logo.png"
                   alt="MyPresence logo"
+                  width={32}
+                  height={32}
                   className="h-8 w-8 rounded-md border border-[#b9cac3] bg-white/90 object-contain p-1"
                   onError={() => setLogoFailed(true)}
+                  priority
                 />
               ) : null}
               <p className="font-[var(--font-heading)] text-2xl text-[#1f2f29]">{currentTitle}</p>

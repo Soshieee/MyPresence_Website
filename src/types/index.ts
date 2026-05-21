@@ -15,7 +15,16 @@ export type AttendanceLog = {
   full_name: string;
   was_newcomer: boolean;
   attendance_context: "Sunday Service" | "Events" | null;
-  attendance_group: "First Service" | "Second Service" | "Rooftop" | "Male" | "Female" | null;
+  attendance_group:
+    | "First Service"
+    | "Second Service"
+    | "Prayer Meeting"
+    | "Rooftop"
+    | "Men's Network"
+    | "Women's Network"
+    | "Male"
+    | "Female"
+    | null;
   event_id?: string | null;
   attended_date: string;
   attended_at: string;

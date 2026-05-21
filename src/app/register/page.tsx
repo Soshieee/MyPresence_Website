@@ -16,6 +16,12 @@ type ChallengeDetection = {
   detection: { box: { x: number; width: number } };
 };
 
+const FACE_DUPLICATE_THRESHOLD = 0.38;
+
+function isValidDescriptor(descriptor: Float32Array) {
+  return descriptor.length > 0 && Array.from(descriptor).every((value) => Number.isFinite(value));
+}
+
 function toErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
 
@@ -208,7 +214,37 @@ export default function RegisterPage() {
           return;
         }
 
+        if (!isValidDescriptor(liveDetection.descriptor)) {
+          setStatusType("error");
+          setStatusMessage("Face descriptor is invalid. Please try again with a clearer face.");
+          return;
+        }
+
         const descriptorArray = Array.from(liveDetection.descriptor);
+
+        const existingResult = await supabase.from("users").select("student_id, full_name, descriptor");
+        if (!existingResult.error && existingResult.data) {
+          const duplicates = existingResult.data
+            .filter((row) => Array.isArray(row.descriptor) && row.descriptor.length > 0)
+            .map((row) => ({
+              studentId: row.student_id,
+              fullName: row.full_name,
+              descriptor: new Float32Array(row.descriptor)
+            }))
+            .filter((row) => isValidDescriptor(row.descriptor))
+            .map((row) => ({
+              ...row,
+              distance: faceapi.euclideanDistance(liveDetection.descriptor, row.descriptor)
+            }))
+            .sort((a, b) => a.distance - b.distance);
+
+          const closest = duplicates[0];
+          if (closest && closest.distance < FACE_DUPLICATE_THRESHOLD) {
+            setStatusType("error");
+            setStatusMessage(`This face already looks registered (${closest.fullName}, ${closest.studentId}).`);
+            return;
+          }
+        }
         const memberId = generateMemberId();
 
         const { error } = await supabase.from("users").upsert(
@@ -237,7 +273,10 @@ export default function RegisterPage() {
         console.error(err);
         setStatusType("error");
         const errorMessage = toErrorMessage(err);
-        setStatusMessage(`Failed to register user: ${errorMessage}`);
+        const modelHint = /model|fetch/i.test(errorMessage)
+          ? " Ensure face-api models are available in /public/models before retrying."
+          : "";
+        setStatusMessage(`Failed to register user: ${errorMessage}${modelHint}`);
       } finally {
         setLoading(false);
       }

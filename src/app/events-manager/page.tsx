@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import Image from "next/image";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { EventItem, EventSuggestion } from "@/types";
 
@@ -280,7 +281,16 @@ export default function EventsManagerPage() {
             <input className="field-input" type="file" accept="image/*" onChange={onPosterChange} />
           </div>
           {posterUrl ? (
-            <img src={posterUrl} alt="Poster Preview" className="h-48 w-full rounded-xl border border-[#b9c8c2] object-cover" />
+            <div className="relative h-48 w-full overflow-hidden rounded-xl border border-[#b9c8c2]">
+              <Image
+                src={posterUrl}
+                alt="Poster Preview"
+                fill
+                className="object-cover"
+                sizes="(max-width: 1024px) 100vw, 50vw"
+                unoptimized
+              />
+            </div>
           ) : null}
           <button className="btn-primary" disabled={loading} type="submit">
             {loading ? "Saving..." : "Save Event"}
