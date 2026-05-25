@@ -14,7 +14,7 @@ export type AttendanceLog = {
   student_id: string;
   full_name: string;
   was_newcomer: boolean;
-  attendance_context: "Sunday Service" | "Events" | null;
+  attendance_context: "Sunday Service" | "Events" | "Prayer Meeting" | null;
   attendance_group:
     | "First Service"
     | "Second Service"

@@ -14,7 +14,7 @@ import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type ScannerStatusType = "info" | "success" | "error";
-type AttendanceContext = "Sunday Service" | "Events";
+type AttendanceContext = "Sunday Service" | "Events" | "Prayer Meeting";
 type AttendanceGroup = "First Service" | "Second Service" | "Prayer Meeting" | "Rooftop" | "Men's Network" | "Women's Network";
 type DetectionWithDescriptor = {
   descriptor: Float32Array;
@@ -26,11 +26,12 @@ type DetectionWithDescriptor = {
   detection: { box: { x: number; width: number } };
 };
 
-const contextOptions: AttendanceContext[] = ["Sunday Service", "Events"];
+const contextOptions: AttendanceContext[] = ["Sunday Service", "Events", "Prayer Meeting"];
 
 const groupOptions: Record<AttendanceContext, AttendanceGroup[]> = {
   "Sunday Service": ["First Service", "Second Service", "Prayer Meeting"],
-  Events: ["Rooftop", "Men's Network", "Women's Network"]
+  Events: ["Rooftop", "Men's Network", "Women's Network"],
+  "Prayer Meeting": ["Prayer Meeting"]
 };
 
 function normalizeAttendanceGroup(label: string | null) {
