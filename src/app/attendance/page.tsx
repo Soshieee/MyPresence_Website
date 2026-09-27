@@ -15,7 +15,8 @@ import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from
 
 type ScannerStatusType = "info" | "success" | "error";
 type AttendanceContext = "Sunday Service" | "Events" | "Prayer Meeting";
-type AttendanceGroup = "First Service" | "Second Service" | "Prayer Meeting" | "Rooftop" | "Men's Network" | "Women's Network";
+type AttendanceGroup = "First Service" | "Second Service" | "Rooftop" | "Men's Network" | "Women's Network";
+type AttendanceKeyGroup = AttendanceGroup | "Prayer Meeting";
 type DetectionWithDescriptor = {
   descriptor: Float32Array;
   landmarks: {
@@ -29,9 +30,9 @@ type DetectionWithDescriptor = {
 const contextOptions: AttendanceContext[] = ["Sunday Service", "Events", "Prayer Meeting"];
 
 const groupOptions: Record<AttendanceContext, AttendanceGroup[]> = {
-  "Sunday Service": ["First Service", "Second Service", "Prayer Meeting"],
+  "Sunday Service": ["First Service", "Second Service"],
   Events: ["Rooftop", "Men's Network", "Women's Network"],
-  "Prayer Meeting": ["Prayer Meeting"]
+  "Prayer Meeting": []
 };
 
 function normalizeAttendanceGroup(label: string | null) {
@@ -43,7 +44,6 @@ function normalizeAttendanceGroup(label: string | null) {
 const EVENT_ATTENDANCE_GROUPS: Array<{ label: AttendanceGroup; color: string }> = [
   { label: "First Service", color: "#2563eb" },
   { label: "Second Service", color: "#0ea5e9" },
-  { label: "Prayer Meeting", color: "#f59e0b" },
   { label: "Rooftop", color: "#8b5cf6" },
   { label: "Men's Network", color: "#10b981" },
   { label: "Women's Network", color: "#ef4444" }
@@ -51,7 +51,7 @@ const EVENT_ATTENDANCE_GROUPS: Array<{ label: AttendanceGroup; color: string }> 
 
 const FACE_DISTANCE_THRESHOLD = 0.42;
 const FACE_AMBIGUITY_GAP = 0.04;
-const MATCH_CONFIRMATION_FRAMES = 3;
+const MATCH_CONFIRMATION_FRAMES = 2;
 const MIN_FACE_BOX_WIDTH_PX = 140;
 const AUTO_MARK_COOLDOWN_MS = 8000;
 const LIVENESS_TIMEOUT_MS = 12000;
@@ -70,7 +70,7 @@ function isMissingEventsTableError(message: string) {
   return /Could not find the table 'public\.events'|relation\s+"?events"?\s+does not exist/i.test(message);
 }
 
-function makeAttendanceKey(studentId: string, date: string, context: AttendanceContext, group: AttendanceGroup, eventId: string | null) {
+function makeAttendanceKey(studentId: string, date: string, context: AttendanceContext, group: AttendanceKeyGroup, eventId: string | null) {
   return `${studentId}|${date}|${context}|${group}|${eventId ?? "none"}`;
 }
 
@@ -131,8 +131,8 @@ export default function AttendancePage() {
   const [selectedContext, setSelectedContext] = useState<AttendanceContext | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<AttendanceGroup | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [latestMatch, setLatestMatch] = useState<{ name: string; studentId: string; context: AttendanceContext; group: AttendanceGroup } | null>(null);
-  const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
+  const [latestMatch, setLatestMatch] = useState<{ name: string; studentId: string; context: AttendanceContext; group: string } | null>(null);
+  const [isMirrored, setIsMirrored] = useState(false);
 
   const statusClass = useMemo(() => {
     if (statusType === "success") return "status-success";
@@ -172,7 +172,6 @@ export default function AttendancePage() {
     const counts: Record<AttendanceGroup, number> = {
       "First Service": 0,
       "Second Service": 0,
-      "Prayer Meeting": 0,
       Rooftop: 0,
       "Men's Network": 0,
       "Women's Network": 0
@@ -309,7 +308,13 @@ export default function AttendancePage() {
   }, [isReady, loadLogsForDate, selectedDate]);
 
   const markAttendance = useCallback(async (studentId: string, fullName: string) => {
-    if (!selectedContext || !selectedGroup) {
+    if (!selectedContext) {
+      setStatusType("error");
+      setStatusMessage("Select attendance type before scanning.");
+      return;
+    }
+
+    if (selectedContext !== "Prayer Meeting" && !selectedGroup) {
       setStatusType("error");
       setStatusMessage("Select attendance type and group before scanning.");
       return;
@@ -322,15 +327,34 @@ export default function AttendancePage() {
     }
 
     const attendanceDate = selectedDate;
+    const groupForAttendance = selectedContext === "Prayer Meeting" ? "Prayer Meeting" : selectedGroup;
+    if (!groupForAttendance) {
+      setStatusType("error");
+      setStatusMessage("Select an attendance group before scanning.");
+      return;
+    }
+
     const matchedUser = users.find((user) => user.student_id === studentId);
     const wasNewcomer = Boolean(matchedUser?.newcomer);
     const eventIdForScan = selectedContext === "Events" ? selectedEventId : null;
-    const attendanceKey = makeAttendanceKey(studentId, attendanceDate, selectedContext, selectedGroup, eventIdForScan);
+    const attendanceKey = makeAttendanceKey(studentId, attendanceDate, selectedContext, groupForAttendance, eventIdForScan);
+
+    if (selectedContext === "Sunday Service" && (groupForAttendance === "First Service" || groupForAttendance === "Second Service")) {
+      const otherService = groupForAttendance === "First Service" ? "Second Service" : "First Service";
+      const otherServiceKey = makeAttendanceKey(studentId, attendanceDate, selectedContext, otherService, null);
+
+      if (attendanceMarkedRef.current.has(otherServiceKey)) {
+        setStatusType("info");
+        setStatusMessage(`${fullName} is already marked for ${otherService} today and cannot be marked for ${groupForAttendance}.`);
+        setLatestMatch({ name: fullName, studentId, context: selectedContext, group: otherService });
+        return;
+      }
+    }
 
     if (attendanceMarkedRef.current.has(attendanceKey)) {
       setStatusType("info");
-      setStatusMessage(`${fullName} is already marked for ${selectedGroup} today.`);
-      setLatestMatch({ name: fullName, studentId, context: selectedContext, group: selectedGroup });
+      setStatusMessage(`${fullName} is already marked for ${groupForAttendance} today.`);
+      setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
       return;
     }
 
@@ -340,7 +364,7 @@ export default function AttendancePage() {
         full_name: fullName,
         was_newcomer: wasNewcomer,
         attendance_context: selectedContext,
-        attendance_group: selectedGroup,
+        attendance_group: groupForAttendance,
         event_id: eventIdForScan,
         attended_date: attendanceDate,
         attended_at: new Date().toISOString()
@@ -351,8 +375,8 @@ export default function AttendancePage() {
       if (error.code === "23505") {
         attendanceMarkedRef.current.add(attendanceKey);
         setStatusType("info");
-        setStatusMessage(`${fullName} is already marked for ${selectedGroup} today.`);
-        setLatestMatch({ name: fullName, studentId, context: selectedContext, group: selectedGroup });
+        setStatusMessage(`${fullName} is already marked for ${groupForAttendance} today.`);
+        setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
         return;
       }
 
@@ -367,7 +391,7 @@ export default function AttendancePage() {
         full_name: fullName,
         was_newcomer: wasNewcomer,
         attendance_context: selectedContext,
-        attendance_group: selectedGroup,
+        attendance_group: groupForAttendance,
         event_id: eventIdForScan,
         attended_date: attendanceDate,
         attended_at: new Date().toISOString()
@@ -394,8 +418,8 @@ export default function AttendancePage() {
     }
 
     setStatusType("success");
-    setStatusMessage(`Attendance marked for ${fullName} in ${selectedGroup}.`);
-    setLatestMatch({ name: fullName, studentId, context: selectedContext, group: selectedGroup });
+    setStatusMessage(`Attendance marked for ${fullName} in ${groupForAttendance}.`);
+    setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
   }, [newcomerClearCount, selectedContext, selectedDate, selectedEventId, selectedGroup, users]);
 
   useEffect(() => {
@@ -492,31 +516,18 @@ export default function AttendancePage() {
 
           noFaceSinceRef.current = null;
 
-          const metrics = extractLivenessMetrics(detection.landmarks, detection.detection.box);
-          if (!metrics) {
-            setStatus("info", "Hold still so liveness can be verified.");
-            return;
-          }
+          let best: ((typeof knownDescriptors)[number] & { distance: number }) | null = null;
+          let secondDistance = Number.POSITIVE_INFINITY;
 
-          const gate = livenessGateRef.current;
-          gate.update(metrics);
-          if (!gate.hasPassed()) {
-            if (gate.getElapsedMs() > LIVENESS_TIMEOUT_MS) {
-              gate.reset();
+          for (const entry of knownDescriptors) {
+            const distance = faceapi.euclideanDistance(detection.descriptor, entry.descriptor);
+            if (!best || distance < best.distance) {
+              secondDistance = best?.distance ?? Number.POSITIVE_INFINITY;
+              best = { ...entry, distance };
+            } else if (distance < secondDistance) {
+              secondDistance = distance;
             }
-            setStatus("info", "Liveness check: blink and gently turn your head.");
-            return;
           }
-
-          const ranked = knownDescriptors
-            .map((entry) => ({
-              ...entry,
-              distance: faceapi.euclideanDistance(detection.descriptor, entry.descriptor)
-            }))
-            .sort((a, b) => a.distance - b.distance);
-
-          const best = ranked[0];
-          const second = ranked[1];
 
           if (!best || best.distance > FACE_DISTANCE_THRESHOLD) {
             stableMatchRef.current = { key: "", frames: 0 };
@@ -525,7 +536,7 @@ export default function AttendancePage() {
             return;
           }
 
-          if (second && second.distance - best.distance < FACE_AMBIGUITY_GAP) {
+          if (secondDistance - best.distance < FACE_AMBIGUITY_GAP) {
             stableMatchRef.current = { key: "", frames: 0 };
             livenessGateRef.current.reset();
             setStatus("error", "Ambiguous match detected. Hold still and face the camera directly.");
@@ -570,7 +581,7 @@ export default function AttendancePage() {
         .finally(() => {
           scanInProgressRef.current = false;
         });
-    }, 1200);
+    }, 500);
 
     return () => {
       clearInterval(interval);
@@ -663,7 +674,7 @@ export default function AttendancePage() {
             ))}
           </div>
           {!selectedContext ? <p className="mt-2 text-xs text-[#5f756c]">Choose attendance type first.</p> : null}
-          {selectedContext && !selectedGroup ? <p className="mt-2 text-xs font-semibold text-[#35584c]">Now select a group to activate scanner.</p> : null}
+          {selectedContext && selectedContext !== "Prayer Meeting" && !selectedGroup ? <p className="mt-2 text-xs font-semibold text-[#35584c]">Now select a group to activate scanner.</p> : null}
         </div>
 
         {selectedContext === "Events" ? (
@@ -719,9 +730,9 @@ export default function AttendancePage() {
             <button
               type="button"
               className="btn-ghost px-3 py-1.5 text-xs"
-              onClick={() => setCameraFacingMode((prev) => (prev === "user" ? "environment" : "user"))}
+              onClick={() => setIsMirrored((prev) => !prev)}
             >
-              Flip Camera
+              Mirror Camera
             </button>
           </div>
           <Webcam
@@ -733,11 +744,13 @@ export default function AttendancePage() {
               setStatusMessage("Camera permission denied or unavailable.");
             }}
             videoConstraints={{
-              facingMode: cameraFacingMode,
+              facingMode: "user",
               width: 960,
               height: 720
             }}
-            className="h-auto w-full rounded-xl border border-[#b9c8c2] shadow-[0_12px_26px_rgba(56,91,79,0.16)]"
+            className={`h-auto w-full rounded-xl border border-[#b9c8c2] shadow-[0_12px_26px_rgba(56,91,79,0.16)] ${
+              isMirrored ? "scale-x-[-1]" : ""
+            }`}
           />
           <div className="chart-frame h-24" />
         </div>

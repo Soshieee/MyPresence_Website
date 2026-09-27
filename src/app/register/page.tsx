@@ -45,7 +45,7 @@ export default function RegisterPage() {
   const [age, setAge] = useState("");
   const [gender, setGender] = useState<"Male" | "Female">("Male");
   const [newcomer, setNewcomer] = useState(true);
-  const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
+  const [isMirrored, setIsMirrored] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusType, setStatusType] = useState<RegisterStatusType>("idle");
   const [statusMessage, setStatusMessage] = useState("Fill in details and capture a single clear face.");
@@ -368,9 +368,9 @@ export default function RegisterPage() {
             <button
               type="button"
               className="btn-ghost px-3 py-1.5 text-xs"
-              onClick={() => setCameraFacingMode((prev) => (prev === "user" ? "environment" : "user"))}
+              onClick={() => setIsMirrored((prev) => !prev)}
             >
-              Flip Camera
+              Mirror Camera
             </button>
           </div>
           <Webcam
@@ -379,11 +379,13 @@ export default function RegisterPage() {
             screenshotFormat="image/jpeg"
             onUserMediaError={handleUserMediaError}
             videoConstraints={{
-              facingMode: cameraFacingMode,
+              facingMode: "user",
               width: 640,
               height: 480
             }}
-            className="h-auto w-full rounded-xl border border-[#b9c8c2] shadow-[0_10px_24px_rgba(56,91,79,0.16)]"
+            className={`h-auto w-full rounded-xl border border-[#b9c8c2] shadow-[0_10px_24px_rgba(56,91,79,0.16)] ${
+              isMirrored ? "scale-x-[-1]" : ""
+            }`}
           />
           <div className="analytics-panel mt-4">
             <h3 className="font-[var(--font-heading)] text-lg text-[#22332d]">Capture Guide</h3>

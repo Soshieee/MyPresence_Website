@@ -15,5 +15,5 @@ export async function loadFaceApiModels(): Promise<void> {
 }
 
 export function getFaceDetectorOptions() {
-  return new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+  return new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5, inputSize: 320 });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, Dispatch, FormEvent, SetStateAction, useEffect, useState } from "react";
 import Image from "next/image";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { EventItem, EventSuggestion } from "@/types";
@@ -25,9 +25,102 @@ function isMissingAttendanceEventIdError(message: string) {
   return /column\s+attendance\.event_id\s+does not exist/i.test(message);
 }
 
+const POLL_QUESTION_PREFIX = "[POLL_Q";
+const POLL_CHOICE_PREFIX = "[POLL_C";
+
+type SuggestionDraft = {
+  id: string;
+  question: string;
+  choices: string[];
+};
+
+type SavedSuggestionPoll = {
+  id: string;
+  question: string;
+  choices: Array<{ id: string; text: string }>;
+};
+
+function createSuggestionDraft(): SuggestionDraft {
+  return { id: crypto.randomUUID(), question: "", choices: [""] };
+}
+
+function parsePollSuggestion(value: string) {
+  const match = value.match(/^\[POLL_([QC])(?::([^\]]+))?\] (.*)$/);
+  if (!match) return null;
+  return { kind: match[1], id: match[2] ?? "legacy", text: match[3] };
+}
+
+function SuggestionBuilder({
+  questions,
+  setQuestions
+}: {
+  questions: SuggestionDraft[];
+  setQuestions: Dispatch<SetStateAction<SuggestionDraft[]>>;
+}) {
+  const updateQuestion = (questionId: string, update: (question: SuggestionDraft) => SuggestionDraft) => {
+    setQuestions((previous) => previous.map((question) => question.id === questionId ? update(question) : question));
+  };
+
+  return (
+    <div className="space-y-4">
+      {questions.map((question, questionIndex) => (
+        <section key={question.id} className="border-l-4 border-[#4285f4] bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1">
+              <label className="field-label" htmlFor={`suggestion-question-${question.id}`}>Suggestion {questionIndex + 1}</label>
+              <input
+                id={`suggestion-question-${question.id}`}
+                className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+                value={question.question}
+                onChange={(event) => updateQuestion(question.id, (current) => ({ ...current, question: event.target.value }))}
+                placeholder="Enter your question"
+              />
+            </div>
+            <button type="button" className="btn-ghost px-3 py-1 text-xs" aria-label={`Remove suggestion ${questionIndex + 1}`} onClick={() => setQuestions((previous) => previous.filter((item) => item.id !== question.id))}>
+              Remove
+            </button>
+          </div>
+          <p className="mt-4 text-xs font-semibold uppercase text-[#5f6368]">Multiple choice</p>
+          <div className="mt-2 space-y-2">
+            {question.choices.map((choice, choiceIndex) => (
+              <div key={`${question.id}-${choiceIndex}`} className="flex items-center gap-3">
+                <span aria-hidden="true" className="h-5 w-5 shrink-0 rounded-full border-2 border-[#70757a]" />
+                <input
+                  className="field-input rounded-none border-0 border-b border-[#dadce0] px-1 py-2 focus:border-[#4285f4] focus:ring-0"
+                  value={choice}
+                  onChange={(event) => updateQuestion(question.id, (current) => ({
+                    ...current,
+                    choices: current.choices.map((item, index) => index === choiceIndex ? event.target.value : item)
+                  }))}
+                  placeholder={`Option ${choiceIndex + 1}`}
+                  aria-label={`Choice ${choiceIndex + 1}`}
+                />
+                <button type="button" className="btn-ghost px-2 py-1 text-xs" aria-label={`Remove choice ${choiceIndex + 1}`} onClick={() => updateQuestion(question.id, (current) => ({
+                  ...current,
+                  choices: current.choices.filter((_, index) => index !== choiceIndex)
+                }))}>
+                  x
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="mt-3 text-sm font-semibold text-[#1a73e8]" onClick={() => updateQuestion(question.id, (current) => ({ ...current, choices: [...current.choices, ""] }))}>
+            + Add option
+          </button>
+        </section>
+      ))}
+      <button type="button" className="btn-ghost" onClick={() => setQuestions((previous) => [...previous, createSuggestionDraft()])}>
+        + Add suggestion
+      </button>
+    </div>
+  );
+}
+
 export default function EventsManagerPage() {
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
+  const [newEventSuggestions, setNewEventSuggestions] = useState<SuggestionDraft[]>([]);
+  const [additionalEventSuggestions, setAdditionalEventSuggestions] = useState<SuggestionDraft[]>([]);
   const [location, setLocation] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
@@ -40,6 +133,7 @@ export default function EventsManagerPage() {
   const [attendanceStatus, setAttendanceStatus] = useState("");
   const [status, setStatus] = useState("Manage events and publish them to the home page.");
   const [loading, setLoading] = useState(false);
+  const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
 
   const defaultFoodSuggestions = ["Chicken", "Porkchop", "Barbecue"];
 
@@ -85,6 +179,20 @@ export default function EventsManagerPage() {
   const selectedEventSuggestions = selectedEventId
     ? eventSuggestions.filter((row) => row.event_id === selectedEventId)
     : [];
+  const selectedEventPolls = Array.from(
+    selectedEventSuggestions.reduce((polls, item) => {
+      const parsed = parsePollSuggestion(item.suggestion_text);
+      if (!parsed) return polls;
+      const poll = polls.get(parsed.id) ?? { id: parsed.id, question: "", choices: [] };
+      if (parsed.kind === "Q") poll.question = parsed.text;
+      else poll.choices.push({ id: item.id, text: parsed.text });
+      polls.set(parsed.id, poll);
+      return polls;
+    }, new Map<string, SavedSuggestionPoll>()).values()
+  ).filter((poll) => poll.question);
+  const selectedEventPlainSuggestions = selectedEventSuggestions.filter(
+    (item) => !parsePollSuggestion(item.suggestion_text)
+  );
 
   const loadEvents = async () => {
     if (!hasSupabaseEnv) {
@@ -187,6 +295,68 @@ export default function EventsManagerPage() {
     setSuggestionStatus("Suggestion removed.");
   };
 
+  const removePoll = async (eventId: string, pollId: string, questionRowId: string, choiceIds: string[]) => {
+    const rowIds = [questionRowId, ...choiceIds];
+    const { error } = await supabase.from("event_suggestions").delete().in("id", rowIds);
+    if (error) {
+      setSuggestionStatus(`Failed to remove suggestion: ${error.message}`);
+      return;
+    }
+
+    setEventSuggestions((previous) => previous.filter((item) => item.event_id !== eventId || !rowIds.includes(item.id)));
+    setSuggestionStatus("Suggestion removed.");
+  };
+
+  const saveSuggestionDrafts = async (eventId: string, drafts: SuggestionDraft[]) => {
+    const rows = drafts.flatMap((draft) => {
+      const pollId = draft.id;
+      const choices = draft.choices.map((choice) => choice.trim()).filter(Boolean);
+      return [
+        { event_id: eventId, suggestion_text: `${POLL_QUESTION_PREFIX}:${pollId}] ${draft.question.trim()}` },
+        ...choices.map((choice) => ({ event_id: eventId, suggestion_text: `${POLL_CHOICE_PREFIX}:${pollId}] ${choice}` }))
+      ];
+    });
+    const { data, error } = await supabase
+      .from("event_suggestions")
+      .insert(rows)
+      .select("id, event_id, suggestion_text, created_at");
+
+    if (error) {
+      setSuggestionStatus(`Failed to save suggestions: ${error.message}`);
+      return false;
+    }
+
+    setEventSuggestions((previous) => [...previous, ...((data ?? []) as EventSuggestion[])]);
+    setSuggestionStatus("Suggestions saved.");
+    return true;
+  };
+
+  const deleteEvent = async (eventId: string) => {
+    const eventToDelete = events.find((item) => item.id === eventId);
+    if (!eventToDelete || !window.confirm(`Delete "${eventToDelete.title}"?`)) return;
+
+    setDeletingEventId(eventId);
+    const { error: unlinkError } = await supabase.from("attendance").update({ event_id: null }).eq("event_id", eventId);
+    if (unlinkError && !isMissingAttendanceEventIdError(unlinkError.message)) {
+      setStatus(`Failed to prepare event deletion: ${unlinkError.message}`);
+      setDeletingEventId(null);
+      return;
+    }
+
+    const { error } = await supabase.from("events").delete().eq("id", eventId);
+    setDeletingEventId(null);
+    if (error) {
+      setStatus(`Failed to delete event: ${error.message}`);
+      return;
+    }
+
+    const remainingEvents = events.filter((item) => item.id !== eventId);
+    setEvents(remainingEvents);
+    setSelectedEventId((current) => current === eventId ? remainingEvents[0]?.id ?? null : current);
+    setEventSuggestions((previous) => previous.filter((item) => item.event_id !== eventId));
+    setStatus("Event deleted. Attendance records were kept.");
+  };
+
   const onPosterChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -215,14 +385,22 @@ export default function EventsManagerPage() {
       return;
     }
 
+    const incompleteSuggestion = newEventSuggestions.find((draft) =>
+      !draft.question.trim() || draft.choices.map((choice) => choice.trim()).filter(Boolean).length < 2
+    );
+    if (incompleteSuggestion) {
+      setStatus("Each suggestion needs a question and at least two choices.");
+      return;
+    }
+
     setLoading(true);
-    const { error } = await supabase.from("events").insert({
+    const { data: createdEvent, error } = await supabase.from("events").insert({
       title: title.trim(),
       details: details.trim() || null,
       location: location.trim() || null,
       event_date: eventDate || null,
       poster_url: posterUrl
-    });
+    }).select("id").single();
     setLoading(false);
 
     if (error) {
@@ -237,10 +415,25 @@ export default function EventsManagerPage() {
 
     setTitle("");
     setDetails("");
+    setNewEventSuggestions([]);
     setLocation("");
     setEventDate("");
     setPosterUrl(null);
-    setStatus("Event saved successfully.");
+    if (newEventSuggestions.length > 0) {
+      const rows = newEventSuggestions.flatMap((draft) => [
+        { event_id: createdEvent.id, suggestion_text: `${POLL_QUESTION_PREFIX}:${draft.id}] ${draft.question.trim()}` },
+        ...draft.choices.map((choice) => ({ event_id: createdEvent.id, suggestion_text: `${POLL_CHOICE_PREFIX}:${draft.id}] ${choice.trim()}` }))
+      ]);
+      const { data: savedSuggestions, error: suggestionError } = await supabase
+        .from("event_suggestions")
+        .insert(rows)
+        .select("id, event_id, suggestion_text, created_at");
+
+      if (suggestionError) setStatus(`Event saved, but suggestions failed: ${suggestionError.message}`);
+      else setEventSuggestions((previous) => [...previous, ...((savedSuggestions ?? []) as EventSuggestion[])]);
+    } else {
+      setStatus("Event saved successfully.");
+    }
     await loadEvents();
   };
 
@@ -265,6 +458,10 @@ export default function EventsManagerPage() {
               onChange={(e) => setDetails(e.target.value)}
               placeholder="Description, schedule, notes"
             />
+          </div>
+          <div className="space-y-3">
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Event Suggestions</h2>
+            <SuggestionBuilder questions={newEventSuggestions} setQuestions={setNewEventSuggestions} />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -307,16 +504,34 @@ export default function EventsManagerPage() {
               events.map((item) => (
                 <article
                   key={item.id}
-                  onClick={() => setSelectedEventId(item.id)}
+                  onClick={() => {
+                    setSelectedEventId(item.id);
+                    setAdditionalEventSuggestions([]);
+                  }}
                   className={`cursor-pointer rounded-xl border p-3 transition-all ${
                     selectedEventId === item.id
                       ? "border-[#7fa899] bg-[#ecf4f1] shadow-[0_8px_18px_rgba(56,91,79,0.1)]"
                       : "border-[#bfd0c9] bg-white/80"
                   }`}
                 >
-                  <h3 className="font-semibold text-[#243730]">{item.title}</h3>
-                  <p className="mt-1 text-xs text-[#5e766c]">{item.event_date ?? "No date"} {item.location ? `• ${item.location}` : ""}</p>
-                  {item.details ? <p className="mt-1 text-sm text-[#3e5850] line-clamp-2">{item.details}</p> : null}
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-semibold text-[#243730]">{item.title}</h3>
+                      <p className="mt-1 text-xs text-[#5e766c]">{item.event_date ?? "No date"} {item.location ? `• ${item.location}` : ""}</p>
+                      {item.details ? <p className="mt-1 text-sm text-[#3e5850] line-clamp-2">{item.details}</p> : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-ghost shrink-0 px-3 py-1 text-xs text-[#8a3f46]"
+                      disabled={deletingEventId === item.id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteEvent(item.id);
+                      }}
+                    >
+                      {deletingEventId === item.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
                 </article>
               ))
             )}
@@ -368,6 +583,30 @@ export default function EventsManagerPage() {
               </div>
             </div>
 
+            <form
+              className="space-y-4 border-l-4 border-[#4285f4] bg-white p-4 shadow-sm"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                const incompleteSuggestion = additionalEventSuggestions.find((draft) =>
+                  !draft.question.trim() || draft.choices.map((choice) => choice.trim()).filter(Boolean).length < 2
+                );
+                if (incompleteSuggestion || additionalEventSuggestions.length === 0) {
+                  setSuggestionStatus("Each suggestion needs a question and at least two choices.");
+                  return;
+                }
+                if (await saveSuggestionDrafts(selectedEvent.id, additionalEventSuggestions)) {
+                  setAdditionalEventSuggestions([]);
+                }
+              }}
+            >
+              <div>
+                <h3 className="font-[var(--font-heading)] text-lg text-[#23332d]">Add Multiple-Choice Suggestions</h3>
+                <p className="mt-1 text-xs text-[#5e766c]">Add one or more questions, each with at least two choices.</p>
+              </div>
+              <SuggestionBuilder questions={additionalEventSuggestions} setQuestions={setAdditionalEventSuggestions} />
+              <button type="submit" className="btn-primary" disabled={additionalEventSuggestions.length === 0}>Save Suggestions</button>
+            </form>
+
             <div>
               <p className="text-sm font-semibold text-[#35564a]">Quick Food Suggestions</p>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -405,20 +644,44 @@ export default function EventsManagerPage() {
             {suggestionStatus ? <p className="text-xs font-semibold text-[#49675c]">{suggestionStatus}</p> : null}
 
             <div className="space-y-2">
-              {selectedEventSuggestions.length === 0 ? (
+              {selectedEventPolls.length === 0 && selectedEventPlainSuggestions.length === 0 ? (
                 <p className="rounded-xl border border-dashed border-[#bdcec8] bg-white/70 px-3 py-2 text-sm text-[#5e766c]">
                   No suggestions yet for this event.
                 </p>
-              ) : (
-                selectedEventSuggestions.map((item) => (
+              ) : null}
+              {selectedEventPolls.map((poll, pollIndex) => {
+                const questionRow = selectedEventSuggestions.find((item) => {
+                  const parsed = parsePollSuggestion(item.suggestion_text);
+                  return parsed?.kind === "Q" && parsed.id === poll.id;
+                });
+                return (
+                <div key={poll.id} className="rounded-xl border border-[#cbd8d3] bg-white p-4 text-sm text-[#2f4d43]">
+                  <p className="text-xs font-semibold text-[#5f6368]">Suggestion {pollIndex + 1} · Multiple choice</p>
+                  <p className="mt-1 font-semibold">{poll.question}</p>
+                  <div className="mt-3 space-y-2">
+                    {poll.choices.map((choice) => (
+                      <div key={choice.id} className="flex items-center gap-3 text-sm">
+                        <span aria-hidden="true" className="h-5 w-5 shrink-0 rounded-full border-2 border-[#70757a]" />
+                        <span className="flex-1">{choice.text}</span>
+                        <button type="button" className="text-xs font-semibold text-[#8a3f46]" aria-label="Remove choice" onClick={() => void removeSuggestion(choice.id)}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="mt-3 text-xs font-semibold text-[#8a3f46]" onClick={() => {
+                    if (questionRow) void removePoll(selectedEvent.id, poll.id, questionRow.id, poll.choices.map((choice) => choice.id));
+                  }}>
+                    Remove suggestion
+                  </button>
+                </div>
+              );})}
+              {selectedEventPlainSuggestions.map((item) => (
                   <div key={item.id} className="flex items-center justify-between rounded-xl border border-[#cbd8d3] bg-white px-3 py-2 text-sm text-[#2f4d43] shadow-[0_4px_10px_rgba(56,91,79,0.05)]">
                     <span>{item.suggestion_text}</span>
                     <button type="button" className="rounded-full border border-[#d9b6ba] px-3 py-1 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]" onClick={() => void removeSuggestion(item.id)}>
                       Remove
                     </button>
                   </div>
-                ))
-              )}
+              ))}
             </div>
           </div>
         )}

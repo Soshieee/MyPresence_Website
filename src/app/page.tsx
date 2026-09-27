@@ -4,17 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
-import { AttendanceLog, EventItem, EventSuggestion, UserFace } from "@/types";
-import SimpleBarChart from "@/components/simple-bar-chart";
-import StackedPercentageChart from "@/components/stacked-percentage-chart";
-import AnalyticsFunnel from "@/components/analytics-funnel";
+import { AttendanceLog, EventItem, UserFace } from "@/types";
+import LineChart from "@/components/line-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type AnalyticsView = "mix" | "eventAttendance" | "funnel";
 const MIN_ANALYTICS_DATE = "2026-01-01";
-const POLL_QUESTION_PREFIX = "[POLL_Q] ";
-const POLL_CHOICE_PREFIX = "[POLL_C] ";
 
 function isMissingColumnError(message: string) {
   return /column\s+users\.(age|gender|newcomer)\s+does not exist/i.test(message);
@@ -32,48 +28,12 @@ function isMissingEventsTableError(message: string) {
   return /Could not find the table 'public\.events'|relation\s+"?events"?\s+does not exist/i.test(message);
 }
 
-function isMissingEventSuggestionsTableError(message: string) {
-  return /Could not find the table 'public\.event_suggestions'|relation\s+"?event_suggestions"?\s+does not exist/i.test(message);
-}
-
 export default function HomePage() {
   const [users, setUsers] = useState<UserFace[]>([]);
   const [attendance, setAttendance] = useState<AttendanceLog[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
-  const [eventSuggestions, setEventSuggestions] = useState<EventSuggestion[]>([]);
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [suggestionInput, setSuggestionInput] = useState("");
-  const [pollQuestionInput, setPollQuestionInput] = useState("");
-  const [pollChoicesInput, setPollChoicesInput] = useState("");
   const [status, setStatus] = useState("Loading dashboard analytics...");
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
-  const [suggestionStatus, setSuggestionStatus] = useState("");
-  const pollSaved = suggestionStatus.toLowerCase().includes("poll saved");
-
-  const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null;
-
-  const selectedEventSuggestions = useMemo(
-    () => (selectedEventId ? eventSuggestions.filter((row) => row.event_id === selectedEventId) : []),
-    [eventSuggestions, selectedEventId]
-  );
-
-  const selectedEventPollQuestion = useMemo(
-    () => selectedEventSuggestions.find((item) => item.suggestion_text.startsWith(POLL_QUESTION_PREFIX)) ?? null,
-    [selectedEventSuggestions]
-  );
-
-  const selectedEventPollChoices = useMemo(
-    () => selectedEventSuggestions.filter((item) => item.suggestion_text.startsWith(POLL_CHOICE_PREFIX)),
-    [selectedEventSuggestions]
-  );
-
-  const selectedEventOtherSuggestions = useMemo(
-    () =>
-      selectedEventSuggestions.filter(
-        (item) => !item.suggestion_text.startsWith(POLL_QUESTION_PREFIX) && !item.suggestion_text.startsWith(POLL_CHOICE_PREFIX)
-      ),
-    [selectedEventSuggestions]
-  );
 
   const range = useMemo(() => {
     const today = new Date();
@@ -167,7 +127,7 @@ export default function HomePage() {
       let eventRows: EventItem[] = [];
       const eventsResult = await supabase
         .from("events")
-        .select("id, title, details, event_date, location, poster_url, created_at")
+        .select("id, title, event_date, location, poster_url, created_at")
         .order("event_date", { ascending: true })
         .limit(6);
 
@@ -182,30 +142,9 @@ export default function HomePage() {
         eventRows = (eventsResult.data ?? []) as EventItem[];
       }
 
-      let suggestionRows: EventSuggestion[] = [];
-      const suggestionResult = await supabase
-        .from("event_suggestions")
-        .select("id, event_id, suggestion_text, created_at")
-        .order("created_at", { ascending: true });
-
-      if (suggestionResult.error) {
-        if (isMissingEventSuggestionsTableError(suggestionResult.error.message)) {
-          warnings.push("Event suggestions table is missing. Run supabase/schema.sql or supabase/patch_2026_03_29.sql to enable suggestions on Home.");
-        } else {
-          setStatus(`Failed to load dashboard: ${suggestionResult.error.message}`);
-          return;
-        }
-      } else {
-        suggestionRows = (suggestionResult.data ?? []) as EventSuggestion[];
-      }
-
       setUsers(userRows);
       setAttendance(attendanceRows);
       setEvents(eventRows);
-      setEventSuggestions(suggestionRows);
-      if (eventRows.length > 0) {
-        setSelectedEventId((prev) => prev ?? eventRows[0].id);
-      }
       setStatus(warnings.length > 0 ? warnings.join(" ") : `Dashboard is live (${range.from} to ${range.to}).`);
     };
 
@@ -260,7 +199,7 @@ export default function HomePage() {
       .slice(-10)
       .map(([date, row]) => ({
         label: date.slice(5).replace("-", "/"),
-        ...row
+        value: Object.values(row).reduce((total, count) => total + count, 0)
       }));
   }, [attendance, userNetworkMap]);
 
@@ -314,102 +253,6 @@ export default function HomePage() {
     ];
   }, [attendance, users.length]);
 
-  const addSuggestion = async (eventId: string, rawValue: string) => {
-    const next = rawValue.trim();
-    if (!next) return;
-
-    const duplicate = eventSuggestions.some(
-      (item) => item.event_id === eventId && item.suggestion_text.toLowerCase() === next.toLowerCase()
-    );
-    if (duplicate) {
-      setSuggestionStatus("Suggestion already exists for this event.");
-      return;
-    }
-
-    const { data, error } = await supabase
-      .from("event_suggestions")
-      .insert({ event_id: eventId, suggestion_text: next })
-      .select("id, event_id, suggestion_text, created_at")
-      .single();
-
-    if (error) {
-      setSuggestionStatus(`Failed to add suggestion: ${error.message}`);
-      return;
-    }
-
-    setEventSuggestions((prev) => [...prev, data as EventSuggestion]);
-    setSuggestionInput("");
-    setSuggestionStatus("Suggestion added.");
-  };
-
-  const savePoll = async (eventId: string) => {
-    const question = pollQuestionInput.trim();
-    const choices = Array.from(
-      new Set(
-        pollChoicesInput
-          .split(/\n|,/)
-          .map((item) => item.trim())
-          .filter(Boolean)
-      )
-    );
-
-    if (!question) {
-      setSuggestionStatus("Poll question is required.");
-      return;
-    }
-
-    if (choices.length < 2) {
-      setSuggestionStatus("Add at least two poll choices.");
-      return;
-    }
-
-    const stalePollIds = selectedEventSuggestions
-      .filter((item) => item.suggestion_text.startsWith(POLL_QUESTION_PREFIX) || item.suggestion_text.startsWith(POLL_CHOICE_PREFIX))
-      .map((item) => item.id);
-
-    if (stalePollIds.length > 0) {
-      const deleteResult = await supabase.from("event_suggestions").delete().in("id", stalePollIds);
-      if (deleteResult.error) {
-        setSuggestionStatus(`Failed to replace previous poll: ${deleteResult.error.message}`);
-        return;
-      }
-    }
-
-    const payload = [
-      { event_id: eventId, suggestion_text: `${POLL_QUESTION_PREFIX}${question}` },
-      ...choices.map((choice) => ({ event_id: eventId, suggestion_text: `${POLL_CHOICE_PREFIX}${choice}` }))
-    ];
-
-    const { data, error } = await supabase
-      .from("event_suggestions")
-      .insert(payload)
-      .select("id, event_id, suggestion_text, created_at");
-
-    if (error) {
-      setSuggestionStatus(`Failed to save poll: ${error.message}`);
-      return;
-    }
-
-    setEventSuggestions((prev) => [
-      ...prev.filter((item) => !stalePollIds.includes(item.id)),
-      ...((data ?? []) as EventSuggestion[])
-    ]);
-    setPollQuestionInput("");
-    setPollChoicesInput("");
-    setSuggestionStatus("Poll saved for this event.");
-  };
-
-  const removeSuggestion = async (suggestionId: string) => {
-    const { error } = await supabase.from("event_suggestions").delete().eq("id", suggestionId);
-    if (error) {
-      setSuggestionStatus(`Failed to remove suggestion: ${error.message}`);
-      return;
-    }
-
-    setEventSuggestions((prev) => prev.filter((item) => item.id !== suggestionId));
-    setSuggestionStatus("Suggestion removed.");
-  };
-
   return (
     <div className="space-y-8 reveal">
       <section className="card overflow-hidden bg-gradient-to-br from-[#f7fbf9] to-[#ecf3f0]">
@@ -449,15 +292,15 @@ export default function HomePage() {
           </div>
 
           {analyticsView === "mix" ? (
-            <StackedPercentageChart title="Daily Network Attendance" rows={timelineRows} emptyText="No network attendance data yet." />
+            <LineChart title="Daily Network Attendance" items={timelineRows} emptyText="No network attendance data yet." />
           ) : null}
 
           {analyticsView === "eventAttendance" ? (
-            <SimpleBarChart title="Daily Event Attendance" items={eventAttendanceItems} emptyText="No event attendance data yet." />
+            <LineChart title="Attendance by Service and Event" items={eventAttendanceItems} emptyText="No event attendance data yet." />
           ) : null}
 
           {analyticsView === "funnel" ? (
-            <AnalyticsFunnel title="Attendance Funnel" steps={funnelSteps} emptyText="No funnel data yet." />
+            <LineChart title="Attendance Funnel" items={funnelSteps} emptyText="No funnel data yet." />
           ) : null}
 
           {analyticsView === "eventAttendance" ? (
@@ -497,7 +340,7 @@ export default function HomePage() {
         </section>
 
         <div className="space-y-6">
-          <SimpleBarChart
+          <LineChart
             title="Newcomer Attendance by Network"
             items={[
               { label: NETWORK_LABELS.kidsMinistry, value: analytics.newcomerByGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
@@ -523,10 +366,7 @@ export default function HomePage() {
             {events.map((event) => (
               <article
                 key={event.id}
-                onClick={() => setSelectedEventId(event.id)}
-                className={`cursor-pointer rounded-2xl border p-3 shadow-[0_8px_18px_rgba(56,91,79,0.09)] transition-all ${
-                  selectedEventId === event.id ? "border-[#7fa899] bg-[#ecf4f1]" : "border-[#bfd0c9] bg-white/80"
-                }`}
+                className="rounded-2xl border border-[#bfd0c9] bg-white/80 p-3 shadow-[0_8px_18px_rgba(56,91,79,0.09)]"
               >
                 {event.poster_url ? (
                   <div className="relative h-36 w-full overflow-hidden rounded-xl">
@@ -542,144 +382,8 @@ export default function HomePage() {
                   {event.event_date ?? "No date"}
                   {event.location ? ` • ${event.location}` : ""}
                 </p>
-                {event.details ? <p className="mt-2 text-sm text-[#3e5850] line-clamp-2">{event.details}</p> : null}
               </article>
             ))}
-            </div>
-
-            <div className="mt-5 rounded-2xl border border-[#aac1b8] bg-gradient-to-br from-[#f8fcfa] to-[#eef5f2] p-5 shadow-[0_10px_24px_rgba(56,91,79,0.08)]">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="font-[var(--font-heading)] text-xl text-[#23332d]">Event Details and Suggestions</h3>
-                {selectedEvent ? (
-                  <span className="rounded-full border border-[#afc4bc] bg-white/85 px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#406357]">
-                    Active Event
-                  </span>
-                ) : null}
-                {selectedEvent && pollSaved ? (
-                  <span className="rounded-full border border-[#a7c3b8] bg-[#eaf4ef] px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2f5b4c]">
-                    Poll Saved
-                  </span>
-                ) : null}
-              </div>
-              {!selectedEvent ? (
-                <p className="mt-2 text-sm text-[#4f675e]">Click an event card to view details and suggestions.</p>
-              ) : (
-                <div className="mt-4 space-y-4">
-                  <div className="rounded-2xl border border-[#bdd0c9] bg-white p-4 shadow-[0_8px_18px_rgba(56,91,79,0.06)]">
-                    <p className="font-[var(--font-heading)] text-xl text-[#243730]">{selectedEvent.title}</p>
-                    <p className="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#5e766c]">
-                      {selectedEvent.event_date ?? "No date"}
-                      {selectedEvent.location ? ` • ${selectedEvent.location}` : ""}
-                    </p>
-                    {selectedEvent.details ? <p className="mt-2 text-sm text-[#3e5850]">{selectedEvent.details}</p> : null}
-                  </div>
-
-                  <div className="rounded-2xl border border-[#bdd0c9] bg-white p-4 shadow-[0_8px_18px_rgba(56,91,79,0.06)]">
-                    <p className="text-sm font-semibold text-[#35564a]">Event Poll Builder</p>
-                    <form
-                      className="mt-3 space-y-2"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void savePoll(selectedEvent.id);
-                      }}
-                    >
-                      <input
-                        className="field-input"
-                        value={pollQuestionInput}
-                        onChange={(event) => setPollQuestionInput(event.target.value)}
-                        maxLength={120}
-                        placeholder="Poll question (e.g. What should we focus on next event?)"
-                      />
-                      <p className="text-[11px] text-[#5e766c]">Max 120 characters.</p>
-                      <textarea
-                        className="field-input min-h-[88px]"
-                        value={pollChoicesInput}
-                        onChange={(event) => setPollChoicesInput(event.target.value)}
-                        maxLength={320}
-                        placeholder={"Choices (comma-separated or one per line)\nExample:\nPrayer\nNetworking\nGames"}
-                      />
-                      <p className="text-[11px] text-[#5e766c]">Enter at least 2 choices. Max 320 characters total.</p>
-                      <button type="submit" className="btn-primary md:min-w-[120px]">
-                        Save Poll
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className="border-t border-dashed border-[#c6d5cf]" />
-
-                  <form
-                    className="flex flex-col gap-2 md:flex-row"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void addSuggestion(selectedEvent.id, suggestionInput);
-                    }}
-                  >
-                    <input
-                      className="field-input md:flex-1"
-                      value={suggestionInput}
-                      onChange={(e) => setSuggestionInput(e.target.value)}
-                      placeholder="Type a suggestion for this event..."
-                    />
-                    <button type="submit" className="btn-primary md:min-w-[120px]">
-                      Add Suggestion
-                    </button>
-                  </form>
-
-                  {suggestionStatus ? <p className="text-xs font-semibold text-[#49675c]">{suggestionStatus}</p> : null}
-
-                  {selectedEventPollQuestion ? (
-                    <div className="rounded-xl border border-[#cbd8d3] bg-white px-3 py-3 text-sm text-[#2f4d43] shadow-[0_4px_10px_rgba(56,91,79,0.05)]">
-                      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#577067]">Current Poll</p>
-                      <div className="mt-1 flex items-start justify-between gap-3">
-                        <p className="font-semibold text-[#294a3e]">{selectedEventPollQuestion.suggestion_text.replace(POLL_QUESTION_PREFIX, "")}</p>
-                        <button
-                          type="button"
-                          className="rounded-full border border-[#d9b6ba] px-3 py-1 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]"
-                          onClick={() => {
-                            const ok = window.confirm("Remove the current poll question and all choices?");
-                            if (ok) {
-                              void removeSuggestion(selectedEventPollQuestion.id);
-                            }
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {selectedEventPollChoices.length === 0 ? (
-                          <p className="text-xs text-[#5e766c]">No choices added yet.</p>
-                        ) : (
-                          selectedEventPollChoices.map((item) => (
-                            <div key={item.id} className="inline-flex items-center gap-2 rounded-full border border-[#bfd0c9] bg-[#f4faf7] px-3 py-1 text-xs">
-                              <span>{item.suggestion_text.replace(POLL_CHOICE_PREFIX, "")}</span>
-                              <button type="button" className="font-semibold text-[#8a3f46]" onClick={() => void removeSuggestion(item.id)}>
-                                x
-                              </button>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="space-y-2">
-                    {selectedEventOtherSuggestions.length === 0 ? (
-                      <p className="rounded-xl border border-dashed border-[#bdcec8] bg-white/70 px-3 py-2 text-sm text-[#5e766c]">
-                        No suggestions yet for this event.
-                      </p>
-                    ) : (
-                      selectedEventOtherSuggestions.map((item) => (
-                        <div key={item.id} className="flex items-center justify-between rounded-xl border border-[#cbd8d3] bg-white px-3 py-2 text-sm text-[#2f4d43] shadow-[0_4px_10px_rgba(56,91,79,0.05)]">
-                          <span>{item.suggestion_text}</span>
-                          <button type="button" className="rounded-full border border-[#d9b6ba] px-3 py-1 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]" onClick={() => void removeSuggestion(item.id)}>
-                            Remove
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           </>
         )}
