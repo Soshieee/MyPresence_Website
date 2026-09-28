@@ -259,7 +259,7 @@ export default function HomePage() {
         <div className="section-head">
           <div>
             <h1 className="page-title font-[var(--font-heading)]">Home Dashboard</h1>
-            <p className="page-subtitle mt-2">Live analytics and event highlights from Supabase.</p>
+            <p className="page-subtitle mt-2">Live analytics and event highlights.</p>
           </div>
           <Link href="/events-manager" className="btn-primary">
             Manage Events
@@ -283,8 +283,8 @@ export default function HomePage() {
         </article>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-        <section className="space-y-3">
+      <div className="grid items-stretch gap-6 lg:grid-cols-[1.3fr_1fr]">
+        <section className="flex flex-col space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => setAnalyticsView("mix")} className={analyticsView === "mix" ? "btn-primary" : "btn-ghost"}>Network Attendance</button>
             <button type="button" onClick={() => setAnalyticsView("eventAttendance")} className={analyticsView === "eventAttendance" ? "btn-primary" : "btn-ghost"}>Event Attendance</button>
@@ -339,7 +339,7 @@ export default function HomePage() {
           ) : null}
         </section>
 
-        <div className="space-y-6">
+        <div className="flex flex-col space-y-6">
           <LineChart
             title="Newcomer Attendance by Network"
             items={[
@@ -349,7 +349,7 @@ export default function HomePage() {
               { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
               { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
             ]}
-            emptyText="No newcomer network attendance yet."
+            emptyText="No newcomer scans today."
           />
         </div>
       </div>

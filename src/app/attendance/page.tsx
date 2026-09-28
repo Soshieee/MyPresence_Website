@@ -9,9 +9,6 @@ import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { AttendanceLog, EventItem, UserFace } from "@/types";
 import { loadAppSettings } from "@/lib/app-settings";
 import { extractLivenessMetrics, LivenessGate } from "@/lib/liveness";
-import SimpleBarChart from "@/components/simple-bar-chart";
-import { GROUP_COLORS } from "@/lib/analytics-colors";
-import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type ScannerStatusType = "info" | "success" | "error";
 type AttendanceContext = "Sunday Service" | "Events" | "Prayer Meeting";
@@ -29,10 +26,10 @@ type DetectionWithDescriptor = {
 
 const contextOptions: AttendanceContext[] = ["Sunday Service", "Events", "Prayer Meeting"];
 
-const groupOptions: Record<AttendanceContext, AttendanceGroup[]> = {
+const groupOptions: Record<AttendanceContext, AttendanceKeyGroup[]> = {
   "Sunday Service": ["First Service", "Second Service"],
   Events: ["Rooftop", "Men's Network", "Women's Network"],
-  "Prayer Meeting": []
+  "Prayer Meeting": ["Prayer Meeting"]
 };
 
 function normalizeAttendanceGroup(label: string | null) {
@@ -40,14 +37,6 @@ function normalizeAttendanceGroup(label: string | null) {
   if (label === "Female") return "Women's Network";
   return label;
 }
-
-const EVENT_ATTENDANCE_GROUPS: Array<{ label: AttendanceGroup; color: string }> = [
-  { label: "First Service", color: "#2563eb" },
-  { label: "Second Service", color: "#0ea5e9" },
-  { label: "Rooftop", color: "#8b5cf6" },
-  { label: "Men's Network", color: "#10b981" },
-  { label: "Women's Network", color: "#ef4444" }
-];
 
 const FACE_DISTANCE_THRESHOLD = 0.42;
 const FACE_AMBIGUITY_GAP = 0.04;
@@ -125,11 +114,11 @@ export default function AttendancePage() {
   const [isReady, setIsReady] = useState(false);
   const [users, setUsers] = useState<UserFace[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
-  const [todayLogs, setTodayLogs] = useState<AttendanceLog[]>([]);
+  const [, setTodayLogs] = useState<AttendanceLog[]>([]);
   const [selectedDate, setSelectedDate] = useState(getTodayIsoDate());
   const [newcomerClearCount, setNewcomerClearCount] = useState<1 | 2>(2);
   const [selectedContext, setSelectedContext] = useState<AttendanceContext | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState<AttendanceGroup | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<AttendanceKeyGroup | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [latestMatch, setLatestMatch] = useState<{ name: string; studentId: string; context: AttendanceContext; group: string } | null>(null);
   const [isMirrored, setIsMirrored] = useState(false);
@@ -147,48 +136,6 @@ export default function AttendancePage() {
         .map((u) => ({ user: u, descriptor: new Float32Array(u.descriptor) })),
     [users]
   );
-
-  const analytics = useMemo(() => {
-    const userNetworkMap = buildStudentNetworkMap(users);
-    const base = createEmptyNetworkCounts();
-    const newcomerBase = createEmptyNetworkCounts();
-
-    for (const log of todayLogs) {
-      const key = userNetworkMap.get(log.student_id);
-      if (!key) continue;
-      base[key] += 1;
-      if (log.was_newcomer) newcomerBase[key] += 1;
-    }
-
-    return {
-      scansToday: todayLogs.length,
-      newcomersToday: todayLogs.filter((log) => log.was_newcomer).length,
-      byGroup: base,
-      newcomerByGroup: newcomerBase
-    };
-  }, [todayLogs, users]);
-
-  const eventAttendanceCounts = useMemo(() => {
-    const counts: Record<AttendanceGroup, number> = {
-      "First Service": 0,
-      "Second Service": 0,
-      Rooftop: 0,
-      "Men's Network": 0,
-      "Women's Network": 0
-    };
-
-    for (const log of todayLogs) {
-      const group = normalizeAttendanceGroup(log.attendance_group) as AttendanceGroup | null;
-      if (!group || !(group in counts)) continue;
-      counts[group] += 1;
-    }
-
-    return EVENT_ATTENDANCE_GROUPS.map((entry) => ({
-      label: entry.label,
-      value: counts[entry.label],
-      color: entry.color
-    }));
-  }, [todayLogs]);
 
   const loadLogsForDate = useCallback(async (date: string) => {
     let attendanceRows: AttendanceLog[] = [];
@@ -433,11 +380,17 @@ export default function AttendancePage() {
 
     livenessGateRef.current.reset();
 
-    if (!selectedContext || !selectedGroup) {
+    const groupForScan: AttendanceKeyGroup | null =
+      selectedContext === "Prayer Meeting" ? "Prayer Meeting" : selectedGroup;
+
+    if (!selectedContext || !groupForScan) {
       setStatusType("info");
       setStatusMessage("Select attendance type and group before scanning.");
       return;
     }
+
+    const activeContext: AttendanceContext = selectedContext;
+    const activeGroup: AttendanceKeyGroup = groupForScan;
 
     if (selectedContext === "Events" && !selectedEventId) {
       setStatusType("info");
@@ -516,6 +469,22 @@ export default function AttendancePage() {
 
           noFaceSinceRef.current = null;
 
+          const metrics = extractLivenessMetrics(detection.landmarks, detection.detection.box);
+          if (!metrics) {
+            setStatus("info", "Hold still so liveness can be verified.");
+            return;
+          }
+
+          const gate = livenessGateRef.current;
+          gate.update(metrics);
+          if (!gate.hasPassed()) {
+            if (gate.getElapsedMs() > LIVENESS_TIMEOUT_MS) {
+              gate.reset();
+            }
+            setStatus("info", "Liveness check: blink or gently turn your head.");
+            return;
+          }
+
           let best: ((typeof knownDescriptors)[number] & { distance: number }) | null = null;
           let secondDistance = Number.POSITIVE_INFINITY;
 
@@ -555,12 +524,12 @@ export default function AttendancePage() {
             return;
           }
 
-          const eventIdForScan = selectedContext === "Events" ? selectedEventId : null;
+          const eventIdForScan = activeContext === "Events" ? selectedEventId : null;
           const scanKey = makeAttendanceKey(
             best.user.student_id,
             selectedDate,
-            selectedContext,
-            selectedGroup,
+            activeContext,
+            activeGroup,
             eventIdForScan
           );
           const now = Date.now();
@@ -713,7 +682,7 @@ export default function AttendancePage() {
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Selected Group</p>
-          <p className="mt-2 font-[var(--font-heading)] text-xl text-[#22322d]">{selectedGroup ?? "None"}</p>
+          <p className="mt-2 font-[var(--font-heading)] text-xl text-[#22322d]">{selectedContext === "Prayer Meeting" ? "Prayer Meeting" : (selectedGroup ?? "None")}</p>
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Linked Event</p>
@@ -779,34 +748,6 @@ export default function AttendancePage() {
             )}
           </div>
         </aside>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <SimpleBarChart
-          title={`Attendance by Network (Date: ${selectedDate}${selectedDate === getTodayIsoDate() ? " • Today" : ""})`}
-          items={[
-            { label: NETWORK_LABELS.kidsMinistry, value: analytics.byGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
-            { label: NETWORK_LABELS.youthMinistry, value: analytics.byGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
-            { label: NETWORK_LABELS.youngProfessionals, value: analytics.byGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
-            { label: NETWORK_LABELS.mensNetwork, value: analytics.byGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
-            { label: NETWORK_LABELS.womensNetwork, value: analytics.byGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
-          ]}
-        />
-        <SimpleBarChart
-          title="Newcomer Attendance by Network"
-          items={[
-            { label: NETWORK_LABELS.kidsMinistry, value: analytics.newcomerByGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
-            { label: NETWORK_LABELS.youthMinistry, value: analytics.newcomerByGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
-            { label: NETWORK_LABELS.youngProfessionals, value: analytics.newcomerByGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
-            { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
-            { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
-          ]}
-        />
-        <SimpleBarChart
-          title={`Event Attendance Breakdown (Date: ${selectedDate}${selectedDate === getTodayIsoDate() ? " • Today" : ""})`}
-          items={eventAttendanceCounts}
-          emptyText="No event attendance data yet for selected date."
-        />
       </div>
     </div>
   );

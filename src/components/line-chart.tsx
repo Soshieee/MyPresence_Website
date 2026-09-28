@@ -8,6 +8,7 @@ type Props = {
   title: string;
   items: LineItem[];
   emptyText?: string;
+  emptyHint?: string;
 };
 
 const WIDTH = 640;
@@ -17,7 +18,7 @@ const RIGHT = 16;
 const TOP = 18;
 const BOTTOM = 62;
 
-export default function LineChart({ title, items, emptyText = "No data yet." }: Props) {
+export default function LineChart({ title, items, emptyText = "No data yet.", emptyHint }: Props) {
   const maxValue = Math.max(...items.map((item) => item.value), 1);
   const plotWidth = WIDTH - LEFT - RIGHT;
   const plotHeight = HEIGHT - TOP - BOTTOM;
@@ -30,10 +31,20 @@ export default function LineChart({ title, items, emptyText = "No data yet." }: 
   const hasData = items.some((item) => item.value > 0);
 
   return (
-    <section className="analytics-panel min-w-0">
+    <section className="analytics-panel flex h-full min-h-[340px] min-w-0 flex-col">
       <h3 className="font-[var(--font-heading)] text-lg text-[#24362f]">{title}</h3>
       {!hasData ? (
-        <p className="mt-3 text-sm text-[#5d736a]">{emptyText}</p>
+        <div className="mt-3 flex flex-1 flex-col justify-center rounded-xl border border-dashed border-[#b9cdc5] bg-[#f6faf8] p-5">
+          <p className="text-sm font-semibold text-[#315349]">{emptyText}</p>
+          {emptyHint ? (
+            <p className="mt-2 text-xs leading-relaxed text-[#5d736a]">{emptyHint}</p>
+          ) : null}
+          <div className="mt-4 flex gap-1.5" aria-hidden="true">
+            {[40, 65, 30, 80, 55].map((w, i) => (
+              <span key={i} className="h-1.5 rounded-full bg-[#cfddd7]" style={{ width: `${w}px` }} />
+            ))}
+          </div>
+        </div>
       ) : (
         <div className="mt-3 overflow-x-auto">
           <svg
