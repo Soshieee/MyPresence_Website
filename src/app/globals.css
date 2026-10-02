@@ -144,14 +144,19 @@ main {
 }
 
 .app-rail {
-  @apply fixed left-0 top-0 z-40 h-screen w-[84px] flex-col border-r;
-  border-color: #29443b;
-  background: linear-gradient(180deg, #385b4f 0%, #2f4e44 100%);
+  @apply fixed left-0 top-0 z-40 h-screen w-[88px] flex-col border-r;
+  border-color: rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.12) 0%, transparent 55%),
+    linear-gradient(180deg, #1e2f29 0%, #2f4e44 55%, #385b4f 100%);
+  box-shadow: 8px 0 30px rgba(22, 36, 31, 0.25);
 }
 
 .app-rail__brand {
-  @apply mx-auto mt-4 flex h-11 w-11 items-center justify-center rounded-full text-base font-bold text-white;
-  background: rgba(255, 255, 255, 0.17);
+  @apply mx-auto mt-5 flex h-12 w-12 items-center justify-center rounded-2xl border text-base font-bold text-white;
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(8px);
 }
 
 .app-rail__brand--logo {
@@ -159,32 +164,41 @@ main {
 }
 
 .app-rail__brand-image {
-  width: 100%;
-  height: 100%;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
-  padding: 6px;
+  filter: brightness(0) invert(1);
 }
 
 .app-rail__nav {
-  @apply mt-6 flex flex-1 flex-col items-center gap-3;
+  @apply mt-8 flex flex-1 flex-col items-center gap-2 px-2;
 }
 
 .app-rail__item {
-  @apply flex w-full flex-col items-center gap-1 py-2 text-center text-[10px] font-semibold text-[#d9e5e1] transition-all;
+  @apply relative flex w-full flex-col items-center gap-1.5 rounded-2xl py-2.5 text-center text-[10px] font-semibold uppercase tracking-[0.08em] text-[#bcd2c9] transition-all;
 }
 
 .app-rail__item:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.app-rail__item--active {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
   color: white;
 }
 
+.app-rail__item--active {
+  background: rgba(255, 255, 255, 0.95);
+  color: #1e2f29;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
 .app-rail__glyph {
-  @apply flex h-6 w-6 items-center justify-center rounded-md text-[11px] font-bold;
-  background: rgba(255, 255, 255, 0.16);
+  @apply flex h-8 w-8 items-center justify-center rounded-xl;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.app-rail__item--active .app-rail__glyph {
+  background: rgba(30, 47, 41, 0.1);
+  border-color: transparent;
+  color: #1e2f29;
 }
 
 .app-rail__label {

@@ -236,7 +236,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
 
-      <div className="md:ml-[84px]">
+      <div className="md:ml-[88px]">
         <header className="border-b border-[#c7d5cf] bg-[#eef3f1]/90 backdrop-blur">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-8">
             <div className="flex items-center gap-3">
@@ -246,7 +246,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   alt="MyPresence logo"
                   width={32}
                   height={32}
-                  className="h-8 w-8 rounded-md border border-[#b9cac3] bg-white/90 object-contain p-1"
+                  className="h-8 w-8 rounded-md border border-[#2f4e44] bg-[#2f4e44] object-contain p-1 brightness-0 invert"
                   onError={() => setLogoFailed(true)}
                   priority
                 />
