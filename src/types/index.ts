@@ -40,11 +40,37 @@ export type EventItem = {
   created_at: string;
 };
 
+export type PollStatus = "open" | "closed" | "archived";
+
 export type EventSuggestion = {
   id: string;
   event_id: string;
   suggestion_text: string;
+  suggestion_question_text?: string | null;
   created_at: string;
+  poll_key?: string | null;
+  item_kind?: "question" | "choice" | null;
+  poll_status?: PollStatus | null;
+  archived_at?: string | null;
+  sort_order?: number | null;
+  updated_at?: string | null;
+};
+
+export type EventPollSubmission = {
+  event_id: string;
+  poll_id: string;
+  question_id?: string | null;
+  voter_key?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type CalendarImageRow = {
+  id: string;
+  calendar_img_url: string | null;
+  storage_path: string | null;
+  created_at: string;
+  updated_at: string | null;
 };
 
 export type AppSettings = {

@@ -3,16 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import CalendarImage from "@/components/calendar-image";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
-import { AttendanceLog, EventItem, UserFace } from "@/types";
+import { AttendanceLog, CalendarImageRow, EventItem, UserFace } from "@/types";
 import LineChart from "@/components/line-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 
 type AnalyticsView = "mix" | "eventAttendance" | "funnel";
 const MIN_ANALYTICS_DATE = "2026-01-01";
+const DEFAULT_EVENT_POSTER = "/default event poster.jpg";
 
-function isMissingColumnError(message: string) {
+function isMissingUserColumnError(message: string) {
   return /column\s+users\.(age|gender|newcomer)\s+does not exist/i.test(message);
 }
 
@@ -28,10 +30,15 @@ function isMissingEventsTableError(message: string) {
   return /Could not find the table 'public\.events'|relation\s+"?events"?\s+does not exist/i.test(message);
 }
 
+function isMissingColumnError(message: string) {
+  return /column .* does not exist|Could not find the '.*' column|schema cache/i.test(message);
+}
+
 export default function HomePage() {
   const [users, setUsers] = useState<UserFace[]>([]);
   const [attendance, setAttendance] = useState<AttendanceLog[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [calendarImage, setCalendarImage] = useState<CalendarImageRow | null>(null);
   const [status, setStatus] = useState("Loading dashboard analytics...");
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
 
@@ -63,7 +70,7 @@ export default function HomePage() {
       let userRows: UserFace[] = [];
       const userResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
       if (userResult.error) {
-        if (isMissingColumnError(userResult.error.message)) {
+        if (isMissingUserColumnError(userResult.error.message)) {
           const fallback = await supabase.from("users").select("id, student_id, full_name, descriptor, created_at");
           if (fallback.error) {
             setStatus(`Failed to load dashboard: ${fallback.error.message}`);
@@ -142,9 +149,45 @@ export default function HomePage() {
         eventRows = (eventsResult.data ?? []) as EventItem[];
       }
 
+      let calendarRow: CalendarImageRow | null = null;
+      const calendarResult = await supabase
+        .from("calendar")
+        .select("id, calendar_img_url, storage_path, created_at, updated_at")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (calendarResult.error) {
+        if (isMissingColumnError(calendarResult.error.message)) {
+          const fallback = await supabase
+            .from("calendar")
+            .select("created_at")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!fallback.error && fallback.data) {
+            calendarRow = {
+              id: "",
+              calendar_img_url: null,
+              storage_path: null,
+              created_at: fallback.data.created_at,
+              updated_at: null
+            };
+          }
+
+          warnings.push("Calendar image storage is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql.");
+        } else {
+          warnings.push(`Calendar image could not be loaded: ${calendarResult.error.message}`);
+        }
+      } else {
+        calendarRow = (calendarResult.data ?? null) as CalendarImageRow | null;
+      }
+
       setUsers(userRows);
       setAttendance(attendanceRows);
       setEvents(eventRows);
+      setCalendarImage(calendarRow);
       setStatus(warnings.length > 0 ? warnings.join(" ") : `Dashboard is live (${range.from} to ${range.to}).`);
     };
 
@@ -356,6 +399,26 @@ export default function HomePage() {
 
       <section className="analytics-panel">
         <div className="section-head">
+          <div>
+            <h2 className="font-[var(--font-heading)] text-xl text-[#21312b]">Monthly Calendar</h2>
+            <p className="mt-1 text-xs text-[#5a7268]">The current calendar image published from the Event Manager.</p>
+          </div>
+          <Link href="/events-manager" className="btn-ghost px-3 py-1 text-xs">
+            Manage Calendar
+          </Link>
+        </div>
+        <div className="mt-4 max-w-4xl">
+          <CalendarImage
+            src={calendarImage?.calendar_img_url ?? null}
+            alt="Monthly calendar"
+            emptyMessage="No calendar image has been uploaded yet."
+            className="aspect-[4/3] w-full"
+          />
+        </div>
+      </section>
+
+      <section className="analytics-panel">
+        <div className="section-head">
           <h2 className="font-[var(--font-heading)] text-xl text-[#21312b]">Upcoming Events</h2>
         </div>
         {events.length === 0 ? (
@@ -368,15 +431,15 @@ export default function HomePage() {
                 key={event.id}
                 className="rounded-2xl border border-[#bfd0c9] bg-white/80 p-3 shadow-[0_8px_18px_rgba(56,91,79,0.09)]"
               >
-                {event.poster_url ? (
-                  <div className="relative h-36 w-full overflow-hidden rounded-xl">
-                    <Image src={event.poster_url} alt={event.title} fill className="object-cover" sizes="(max-width: 1024px) 100vw, 33vw" />
-                  </div>
-                ) : (
-                  <div className="flex h-36 w-full items-center justify-center rounded-xl bg-[#dce6e2] text-xs font-semibold text-[#4a665a]">
-                    No Poster
-                  </div>
-                )}
+                <div className="relative h-36 w-full overflow-hidden rounded-xl">
+                  <Image
+                    src={event.poster_url || DEFAULT_EVENT_POSTER}
+                    alt={event.poster_url ? event.title : `${event.title} default poster`}
+                    fill
+                    className="object-cover"
+                    sizes="(max-width: 1024px) 100vw, 33vw"
+                  />
+                </div>
                 <h3 className="mt-3 font-[var(--font-heading)] text-lg text-[#263831]">{event.title}</h3>
                 <p className="mt-1 text-xs text-[#577067]">
                   {event.event_date ?? "No date"}

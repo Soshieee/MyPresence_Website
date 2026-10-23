@@ -39,8 +39,8 @@ export function extractLivenessMetrics(landmarks: LandmarksLike | null, box: { x
   nose = landmarks.getNose?.() as PointLike[] | undefined;
 
   // Fallback: try array-based access via _positions (face-api.js uses 68 point landmarks)
-  if ((!leftEye || !rightEye || !nose) && Array.isArray((landmarks as any)._positions)) {
-    const positions = (landmarks as any)._positions as PointLike[];
+  if ((!leftEye || !rightEye || !nose) && Array.isArray(landmarks._positions)) {
+    const positions = landmarks._positions;
     if (positions.length >= 68) {
       leftEye = leftEye || positions.slice(42, 48);   // Left eye: points 42-47
       rightEye = rightEye || positions.slice(36, 42); // Right eye: points 36-41
