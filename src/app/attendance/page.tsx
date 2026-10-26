@@ -46,6 +46,8 @@ const AUTO_MARK_COOLDOWN_MS = 8000;
 const LIVENESS_TIMEOUT_MS = 12000;
 const NO_FACE_RESET_MS = 5000;
 const STATUS_COOLDOWN_MS = 1200;
+const SUNDAY_SERVICE_DUPLICATE_MESSAGE =
+  "This user has already scanned for the Sunday Service for the day";
 
 function getTodayIsoDate() {
   return new Date().toISOString().slice(0, 10);
@@ -102,6 +104,7 @@ async function withSupabaseRetry<T>(action: () => PromiseLike<T>, attempts = 3) 
 export default function AttendancePage() {
   const webcamRef = useRef<Webcam | null>(null);
   const attendanceMarkedRef = useRef<Set<string>>(new Set());
+  const attendanceLoadedDateRef = useRef<string | null>(null);
   const scanInProgressRef = useRef(false);
   const stableMatchRef = useRef<{ key: string; frames: number }>({ key: "", frames: 0 });
   const autoMarkCooldownRef = useRef<Map<string, number>>(new Map());
@@ -139,6 +142,7 @@ export default function AttendancePage() {
 
   const loadLogsForDate = useCallback(async (date: string) => {
     let attendanceRows: AttendanceLog[] = [];
+    attendanceLoadedDateRef.current = null;
 
     const attendanceResult = await withSupabaseRetry(() =>
       supabase
@@ -183,6 +187,7 @@ export default function AttendancePage() {
           )
         )
     );
+    attendanceLoadedDateRef.current = date;
     setTodayLogs(attendanceRows);
   }, []);
 
@@ -286,19 +291,25 @@ export default function AttendancePage() {
     const eventIdForScan = selectedContext === "Events" ? selectedEventId : null;
     const attendanceKey = makeAttendanceKey(studentId, attendanceDate, selectedContext, groupForAttendance, eventIdForScan);
 
-    if (selectedContext === "Sunday Service" && (groupForAttendance === "First Service" || groupForAttendance === "Second Service")) {
+    const attendanceIsLoadedForDate = attendanceLoadedDateRef.current === attendanceDate;
+
+    if (
+      attendanceIsLoadedForDate &&
+      selectedContext === "Sunday Service" &&
+      (groupForAttendance === "First Service" || groupForAttendance === "Second Service")
+    ) {
       const otherService = groupForAttendance === "First Service" ? "Second Service" : "First Service";
       const otherServiceKey = makeAttendanceKey(studentId, attendanceDate, selectedContext, otherService, null);
 
       if (attendanceMarkedRef.current.has(otherServiceKey)) {
         setStatusType("info");
-        setStatusMessage(`${fullName} is already marked for ${otherService} today and cannot be marked for ${groupForAttendance}.`);
-        setLatestMatch({ name: fullName, studentId, context: selectedContext, group: otherService });
+        setStatusMessage(SUNDAY_SERVICE_DUPLICATE_MESSAGE);
+        setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
         return;
       }
     }
 
-    if (attendanceMarkedRef.current.has(attendanceKey)) {
+    if (attendanceIsLoadedForDate && attendanceMarkedRef.current.has(attendanceKey)) {
       setStatusType("info");
       setStatusMessage(`${fullName} is already marked for ${groupForAttendance} today.`);
       setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
@@ -320,9 +331,44 @@ export default function AttendancePage() {
 
     if (error) {
       if (error.code === "23505") {
+        const isSundayCrossServiceConflict =
+          error.message.includes("attendance_sunday_service_once_per_day_idx") ||
+          Boolean(error.details?.includes("attendance_sunday_service_once_per_day_idx"));
+
+        if (isSundayCrossServiceConflict) {
+          const { data: sameServiceRows } = await supabase
+            .from("attendance")
+            .select("id")
+            .eq("student_id", studentId)
+            .eq("attended_date", attendanceDate)
+            .eq("attendance_context", selectedContext)
+            .eq("attendance_group", groupForAttendance)
+            .limit(1);
+
+          if ((sameServiceRows?.length ?? 0) > 0) {
+            attendanceMarkedRef.current.add(attendanceKey);
+            setStatusType("info");
+            setStatusMessage(`${fullName} is already marked for ${groupForAttendance} today.`);
+            setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
+            return;
+          }
+
+          setStatusType("info");
+          setStatusMessage(SUNDAY_SERVICE_DUPLICATE_MESSAGE);
+          setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
+          return;
+        }
+
         attendanceMarkedRef.current.add(attendanceKey);
         setStatusType("info");
         setStatusMessage(`${fullName} is already marked for ${groupForAttendance} today.`);
+        setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
+        return;
+      }
+
+      if (error.message.includes(SUNDAY_SERVICE_DUPLICATE_MESSAGE)) {
+        setStatusType("info");
+        setStatusMessage(SUNDAY_SERVICE_DUPLICATE_MESSAGE);
         setLatestMatch({ name: fullName, studentId, context: selectedContext, group: groupForAttendance });
         return;
       }

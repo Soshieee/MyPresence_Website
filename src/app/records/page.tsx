@@ -28,6 +28,14 @@ const ATTENDANCE_GROUPS: Array<{ label: AttendanceGroup; color: string }> = [
   { label: "Women's Network", color: "#ef4444" }
 ];
 
+const LINKED_EVENT_COLORS = ["#0f766e", "#2563eb", "#8b5cf6", "#f59e0b", "#e11d48", "#0891b2"];
+
+type LinkedEvent = {
+  id: string;
+  title: string;
+  event_date: string | null;
+};
+
 function normalizeAttendanceGroup(label: string | null): AttendanceGroup | null {
   if (label === "Male") return "Men's Network";
   if (label === "Female") return "Women's Network";
@@ -36,17 +44,19 @@ function normalizeAttendanceGroup(label: string | null): AttendanceGroup | null 
 }
 
 function isMissingClassificationColumnError(message: string) {
-  return /column\s+attendance\.(was_newcomer|attendance_context|attendance_group)\s+does not exist/i.test(message);
+  return /column\s+attendance\.(was_newcomer|attendance_context|attendance_group|event_id)\s+does not exist/i.test(message);
 }
 
 export default function AttendanceRecordsPage() {
   const [logs, setLogs] = useState<AttendanceLog[]>([]);
   const [users, setUsers] = useState<UserFace[]>([]);
+  const [linkedEvents, setLinkedEvents] = useState<LinkedEvent[]>([]);
   const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [selectedNetworks, setSelectedNetworks] = useState<NetworkKey[]>([]);
   const [attendanceTypeFilter, setAttendanceTypeFilter] = useState<AttendanceTypeFilter>("all");
+  const [selectedLinkedEventId, setSelectedLinkedEventId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -106,7 +116,7 @@ export default function AttendanceRecordsPage() {
     try {
       const query = supabase
         .from("attendance")
-        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, attended_date, attended_at")
+        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
         .gte("attended_date", range.from)
         .lte("attended_date", range.to)
         .order("attended_at", { ascending: false });
@@ -116,6 +126,17 @@ export default function AttendanceRecordsPage() {
       const usersResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
       if (!usersResult.error) {
         setUsers((usersResult.data ?? []) as UserFace[]);
+      }
+
+      const eventsResult = await supabase
+        .from("events")
+        .select("id, title, event_date")
+        .order("event_date", { ascending: true });
+
+      if (!eventsResult.error) {
+        setLinkedEvents((eventsResult.data ?? []) as LinkedEvent[]);
+      } else {
+        setLinkedEvents([]);
       }
 
       if (fetchError) {
@@ -135,7 +156,8 @@ export default function AttendanceRecordsPage() {
               ...row,
               was_newcomer: false,
               attendance_context: null,
-              attendance_group: null
+              attendance_group: null,
+              event_id: null
             }))
           );
           setError("Attendance category columns are missing. Run supabase/schema.sql to enable service/event graphs.");
@@ -163,11 +185,78 @@ export default function AttendanceRecordsPage() {
 
   const userProfileMap = useMemo(() => new Map(users.map((user) => [user.student_id, user])), [users]);
 
+  const linkedEventLabelById = useMemo(() => {
+    const titleCounts = new Map<string, number>();
+    for (const event of linkedEvents) {
+      titleCounts.set(event.title, (titleCounts.get(event.title) ?? 0) + 1);
+    }
+
+    return new Map(
+      linkedEvents.map((event) => {
+        const duplicateTitle = (titleCounts.get(event.title) ?? 0) > 1;
+        const label = duplicateTitle
+          ? `${event.title}${event.event_date ? ` (${event.event_date})` : ` (${event.id.slice(0, 8)})`}`
+          : event.title;
+        return [event.id, label];
+      })
+    );
+  }, [linkedEvents]);
+
+  const linkedEventOptions = useMemo(() => {
+    const options = new Map<string, { id: string; label: string; date: string | null }>();
+
+    for (const event of linkedEvents) {
+      options.set(event.id, {
+        id: event.id,
+        label: linkedEventLabelById.get(event.id) ?? event.title,
+        date: event.event_date
+      });
+    }
+
+    // Keep event-linked attendance filterable even if the event row was removed.
+    for (const log of logs) {
+      if (!log.event_id || options.has(log.event_id)) continue;
+      options.set(log.event_id, {
+        id: log.event_id,
+        label: `Deleted Event (${log.event_id.slice(0, 8)})`,
+        date: null
+      });
+    }
+
+    if (selectedLinkedEventId && !options.has(selectedLinkedEventId)) {
+      options.set(selectedLinkedEventId, {
+        id: selectedLinkedEventId,
+        label: `Deleted Event (${selectedLinkedEventId.slice(0, 8)})`,
+        date: null
+      });
+    }
+
+    return Array.from(options.values()).sort((a, b) => {
+      if (a.date && b.date) {
+        const byDate = b.date.localeCompare(a.date);
+        return byDate !== 0 ? byDate : a.label.localeCompare(b.label);
+      }
+      if (a.date) return -1;
+      if (b.date) return 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [linkedEvents, linkedEventLabelById, logs, selectedLinkedEventId]);
+
+  const selectedLinkedEventLabel = useMemo(() => {
+    if (!selectedLinkedEventId) return null;
+    return linkedEventLabelById.get(selectedLinkedEventId) ?? `Deleted Event (${selectedLinkedEventId.slice(0, 8)})`;
+  }, [linkedEventLabelById, selectedLinkedEventId]);
+
   const selectedNetworkSet = useMemo(() => new Set(selectedNetworks), [selectedNetworks]);
   const normalizedSearch = useMemo(() => searchTerm.trim().toLowerCase(), [searchTerm]);
 
   const toggleNetwork = useCallback((key: NetworkKey) => {
     setSelectedNetworks((prev) => (prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]));
+  }, []);
+
+  const handleAttendanceTypeChange = useCallback((filter: AttendanceTypeFilter) => {
+    setAttendanceTypeFilter(filter);
+    setSelectedLinkedEventId(null);
   }, []);
 
   const filteredLogs = useMemo(() => {
@@ -176,8 +265,18 @@ export default function AttendanceRecordsPage() {
       const matchesNetwork =
         selectedNetworkSet.size === 0 || (userNetwork ? selectedNetworkSet.has(userNetwork) : false);
 
-      const matchesAttendanceType =
-        attendanceTypeFilter === "all" || log.attendance_context === attendanceTypeFilter;
+      // event_id is the reliable link for event attendance; older rows may use
+      // a network name as their context/group instead of the "Events" context.
+      let matchesAttendanceType = false;
+      if (attendanceTypeFilter === "all") {
+        matchesAttendanceType = true;
+      } else if (attendanceTypeFilter === "Events") {
+        matchesAttendanceType = selectedLinkedEventId
+          ? log.event_id === selectedLinkedEventId
+          : Boolean(log.event_id) || log.attendance_context === "Events";
+      } else {
+        matchesAttendanceType = log.attendance_context === attendanceTypeFilter;
+      }
 
       const matchesSearch =
         normalizedSearch.length === 0 ||
@@ -186,7 +285,10 @@ export default function AttendanceRecordsPage() {
 
       return matchesNetwork && matchesAttendanceType && matchesSearch;
     });
-  }, [attendanceTypeFilter, logs, normalizedSearch, selectedNetworkSet, userNetworkMap]);
+  }, [attendanceTypeFilter, logs, normalizedSearch, selectedLinkedEventId, selectedNetworkSet, userNetworkMap]);
+
+  const hasNoRecordsForSelectedLinkedEvent =
+    attendanceTypeFilter === "Events" && Boolean(selectedLinkedEventId) && filteredLogs.length === 0;
 
   const dailyTotals = useMemo(() => {
     const map = new Map<string, number>();
@@ -242,25 +344,45 @@ export default function AttendanceRecordsPage() {
   const attendanceByContext = useMemo(() => {
     const counts = {
       "Sunday Service": 0,
-      Events: 0,
+      "Linked Events": 0,
       "Prayer Meeting": 0,
       Unknown: 0
     };
 
     for (const log of filteredLogs) {
-      if (log.attendance_context === "Sunday Service") counts["Sunday Service"] += 1;
-      else if (log.attendance_context === "Events") counts.Events += 1;
+      if (log.event_id) counts["Linked Events"] += 1;
+      else if (log.attendance_context === "Sunday Service") counts["Sunday Service"] += 1;
       else if (log.attendance_context === "Prayer Meeting") counts["Prayer Meeting"] += 1;
       else counts.Unknown += 1;
     }
 
     return [
       { label: "Sunday Service", value: counts["Sunday Service"], color: "#1d4ed8" },
-      { label: "Events", value: counts.Events, color: "#0f766e" },
+      { label: "Linked Events", value: counts["Linked Events"], color: "#0f766e" },
       { label: "Prayer Meeting", value: counts["Prayer Meeting"], color: "#f59e0b" },
       { label: "Unknown", value: counts.Unknown, color: "#64748b" }
     ];
   }, [filteredLogs]);
+
+  const attendanceByLinkedEvent = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    for (const log of filteredLogs) {
+      if (!log.event_id) continue;
+      counts.set(log.event_id, (counts.get(log.event_id) ?? 0) + 1);
+    }
+
+    return Array.from(counts.entries())
+      .map(([eventId, value]) => ({
+        label: linkedEventLabelById.get(eventId) ?? `Deleted Event (${eventId.slice(0, 8)})`,
+        value
+      }))
+      .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
+      .map((item, index) => ({
+        ...item,
+        color: LINKED_EVENT_COLORS[index % LINKED_EVENT_COLORS.length]
+      }));
+  }, [filteredLogs, linkedEventLabelById]);
 
   const attendanceByGroup = useMemo(() => {
     const counts: Record<AttendanceGroup, number> = {
@@ -446,33 +568,66 @@ export default function AttendanceRecordsPage() {
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => setAttendanceTypeFilter("all")}
+            onClick={() => handleAttendanceTypeChange("all")}
             className={attendanceTypeFilter === "all" ? "btn-primary" : "btn-ghost"}
           >
             All Types
           </button>
           <button
             type="button"
-            onClick={() => setAttendanceTypeFilter("Sunday Service")}
+            onClick={() => handleAttendanceTypeChange("Sunday Service")}
             className={attendanceTypeFilter === "Sunday Service" ? "btn-primary" : "btn-ghost"}
           >
             Sunday Service
           </button>
           <button
             type="button"
-            onClick={() => setAttendanceTypeFilter("Events")}
+            onClick={() => handleAttendanceTypeChange("Events")}
             className={attendanceTypeFilter === "Events" ? "btn-primary" : "btn-ghost"}
           >
             Events
           </button>
           <button
             type="button"
-            onClick={() => setAttendanceTypeFilter("Prayer Meeting")}
+            onClick={() => handleAttendanceTypeChange("Prayer Meeting")}
             className={attendanceTypeFilter === "Prayer Meeting" ? "btn-primary" : "btn-ghost"}
           >
             Prayer Meeting
           </button>
         </div>
+
+        {attendanceTypeFilter === "Events" ? (
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-full sm:max-w-sm">
+              <label className="field-label" htmlFor="linked-event-filter">
+                Filter By Linked Event
+              </label>
+              <select
+                id="linked-event-filter"
+                className="field-input"
+                value={selectedLinkedEventId ?? ""}
+                onChange={(event) => {
+                  const eventId = event.target.value || null;
+                  setAttendanceTypeFilter("Events");
+                  setSelectedLinkedEventId(eventId);
+                }}
+                disabled={linkedEventOptions.length === 0}
+              >
+                <option value="">All Linked Events</option>
+                {linkedEventOptions.map((event) => (
+                  <option key={event.id} value={event.id}>
+                    {event.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {selectedLinkedEventId ? (
+              <button type="button" onClick={() => setSelectedLinkedEventId(null)} className="btn-ghost">
+                Clear Event
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <div>
           <label className="field-label" htmlFor="record-search">
@@ -491,14 +646,29 @@ export default function AttendanceRecordsPage() {
 
       {error ? <div className="status-error">{error}</div> : null}
       {loading && !error ? <div className="status-info">Updating analytics...</div> : null}
+      {!loading && !error && hasNoRecordsForSelectedLinkedEvent ? (
+        <div className="status-info">
+          No attendance records for {selectedLinkedEventLabel ?? "the selected linked event"} in the selected date range.
+        </div>
+      ) : null}
 
       <section className="analytics-panel">
         <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Analytics Overview</h2>
+        {selectedLinkedEventId ? (
+          <p className="mt-1 text-sm text-[#5d736a]">
+            Showing attendance for{" "}
+            <span className="font-semibold text-[#315349]">
+              {selectedLinkedEventLabel ?? "the selected linked event"}
+            </span>
+            .
+          </p>
+        ) : null}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <LineChart title="Attendees by Day (Last 10)" items={dailyTotals} emptyText="No daily attendance yet." />
           <LineChart title="Attendees by Ministry" items={recordsByGroup} emptyText="No network attendance yet." />
           <LineChart title="Newcomer Visits by Ministry" items={newcomerByGroup} emptyText="No newcomer attendance yet." />
           <LineChart title="Attendees by Attendance Type" items={attendanceByContext} emptyText="No attendance type data yet." />
+          <LineChart title="Attendees by Linked Event" items={attendanceByLinkedEvent} emptyText="No linked event attendance yet." />
           <LineChart title="Attendees by Service or Event" items={attendanceByGroup} emptyText="No attendance group data yet." />
           <LineChart title="Newcomers by Ministry" items={demographicAnalytics.newcomersByNetwork} emptyText="No newcomer profiles available." />
           <LineChart title="Attendee Age Distribution" items={demographicAnalytics.ageDistribution} emptyText="No age data available." />

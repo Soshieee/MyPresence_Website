@@ -53,6 +53,74 @@ begin
   end if;
 end $$;
 
+-- A member may attend only one Sunday Service per day. The trigger enforces the
+-- rule for new rows even when historical conflicts exist; the partial unique
+-- index is added when the current data is clean.
+create index if not exists attendance_sunday_service_lookup_idx
+  on public.attendance (student_id, attended_date)
+  where attendance_context = 'Sunday Service'
+    and attendance_group in ('First Service', 'Second Service');
+
+do $$
+begin
+  if exists (
+    select 1
+    from public.attendance
+    where attendance_context = 'Sunday Service'
+      and attendance_group in ('First Service', 'Second Service')
+    group by student_id, attended_date
+    having count(*) > 1
+  ) then
+    raise notice 'Existing Sunday Service conflicts found; unique index skipped. The trigger will block new conflicts.';
+  else
+    create unique index if not exists attendance_sunday_service_once_per_day_idx
+      on public.attendance (student_id, attended_date)
+      where attendance_context = 'Sunday Service'
+        and attendance_group in ('First Service', 'Second Service');
+  end if;
+end $$;
+
+create or replace function public.enforce_sunday_service_once_per_day()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.attendance_context = 'Sunday Service'
+     and new.attendance_group in ('First Service', 'Second Service') then
+    perform pg_advisory_xact_lock(
+      hashtextextended(
+        'sunday-service:' || new.student_id || ':' || new.attended_date::text,
+        0
+      )
+    );
+
+    if exists (
+      select 1
+      from public.attendance existing
+      where existing.student_id = new.student_id
+        and existing.attended_date = new.attended_date
+        and existing.attendance_context = 'Sunday Service'
+        and existing.attendance_group in ('First Service', 'Second Service')
+        and existing.attendance_group <> new.attendance_group
+        and existing.id is distinct from new.id
+    ) then
+      raise exception 'This user has already scanned for the Sunday Service for the day'
+        using errcode = 'P0001';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_sunday_service_once_per_day on public.attendance;
+create trigger enforce_sunday_service_once_per_day
+before insert or update of student_id, attended_date, attendance_context, attendance_group
+on public.attendance
+for each row execute function public.enforce_sunday_service_once_per_day();
+
 create table if not exists public.events (
   id uuid primary key default gen_random_uuid(),
   title text not null,
