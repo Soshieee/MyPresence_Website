@@ -34,7 +34,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [verseIndex, setVerseIndex] = useState(() => Math.floor(Math.random() * VERSES.length));
+  // Start from a stable value so server and client render the same verse.
+  // The interval below still rotates through the rest.
+  const [verseIndex, setVerseIndex] = useState(0);
 
   useEffect(() => {
     if (!hasSupabaseEnv) return;
@@ -159,7 +161,7 @@ export default function LoginPage() {
         </div>
 
         <div className="relative flex flex-wrap items-center gap-2">
-          {["Sunday Service", "Events", "Prayer Meeting"].map((item) => (
+          {["Sunday Service", "Prayer Meeting", "Rooftop", "Women's Network", "Men's Network"].map((item) => (
             <span key={item} className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-[#e6f0ec] backdrop-blur">
               {item}
             </span>

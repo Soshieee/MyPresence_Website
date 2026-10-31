@@ -3,6 +3,7 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import CalendarImage from "@/components/calendar-image";
+import PollPieChart from "@/components/poll-pie-chart";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import {
   createPollChoice,
@@ -20,6 +21,14 @@ import {
   EventSuggestion,
   PollStatus
 } from "@/types";
+import {
+  EVENT_TYPES,
+  EventType,
+  isEventCompatible,
+  isEventType,
+  isMissingEventTypeColumnError,
+  normalizeAttendanceType
+} from "@/lib/attendance";
 
 type EventAttendanceRow = {
   id: string;
@@ -27,6 +36,12 @@ type EventAttendanceRow = {
   student_id: string;
   attended_at: string;
   attendance_group: string | null;
+};
+
+type MemberCounts = {
+  active: number;
+  female: number;
+  male: number;
 };
 
 type SavedPollChoice = {
@@ -38,6 +53,7 @@ type SavedPollChoice = {
 
 type SavedPoll = {
   key: string;
+  mainQuestion: string;
   question: string;
   createdAt: string;
   status: PollStatus;
@@ -53,7 +69,7 @@ type PollDraftEditorProps = {
 };
 
 const SUGGESTION_COLUMNS =
-  "id,event_id,suggestion_text,suggestion_question_text,created_at,poll_key,item_kind,poll_status,archived_at,sort_order,updated_at";
+  "id,event_id,suggestion_text,main_question,suggestion_question_text,created_at,poll_key,item_kind,poll_status,archived_at,sort_order,updated_at";
 const SUGGESTION_FALLBACK_COLUMNS = "id,event_id,suggestion_text,created_at";
 const SUBMISSION_COLUMNS = "event_id,poll_id,question_id,voter_key,created_at,updated_at";
 const SUBMISSION_FALLBACK_COLUMNS = "event_id,poll_id,created_at";
@@ -77,6 +93,44 @@ function isMissingEventSuggestionsTableError(message: string) {
 
 function isMissingAttendanceEventIdError(message: string) {
   return /column\s+attendance\.event_id\s+does not exist/i.test(message);
+}
+
+function formatDeleteEventError(message: string) {
+  if (/Could not find the function|function\s+.*delete_event.*does not exist|schema cache/i.test(message)) {
+    return "Event deletion is not available yet. Run supabase/patch_2026_10_30_delete_event.sql in the Supabase SQL Editor, then try again.";
+  }
+
+  if (/EVENT_HAS_ATTENDANCE/i.test(message)) {
+    return "This event still has linked attendance records. Refresh the page and try again.";
+  }
+
+  if (/must be signed in/i.test(message) || /42501/.test(message)) {
+    return "You must be signed in to delete an event.";
+  }
+
+  return `Failed to delete event: ${message}`;
+}
+
+function formatEventDate(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+}
+
+function memberDenominatorFor(eventType: EventType | null, counts: MemberCounts | null) {
+  if (!counts) {
+    return { count: 0, label: "members" };
+  }
+
+  if (eventType === "Women's Network") {
+    return { count: counts.female, label: "female members" };
+  }
+
+  if (eventType === "Men's Network") {
+    return { count: counts.male, label: "male members" };
+  }
+
+  return { count: counts.active, label: "active members" };
 }
 
 function rowPollKey(row: EventSuggestion) {
@@ -114,6 +168,7 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
     const key = rowPollKey(row);
     const poll = polls.get(key) ?? {
       key,
+      mainQuestion: "",
       question: "",
       createdAt: row.created_at,
       status: "open" as PollStatus,
@@ -125,8 +180,13 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
       poll.createdAt = row.created_at;
     }
 
+    const mainQuestionText = row.main_question?.trim() ?? "";
     const questionText = row.suggestion_question_text?.trim() ?? "";
     const rowStatus = isPollStatus(row.poll_status) ? row.poll_status : null;
+
+    if (mainQuestionText && !poll.mainQuestion) {
+      poll.mainQuestion = mainQuestionText;
+    }
 
     if (isQuestionRow(row)) {
       poll.legacyQuestionRowId = row.id;
@@ -188,20 +248,36 @@ function PollDraftEditor({
     <section className="border-l-4 border-[#4285f4] bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
-          <label className="field-label" htmlFor={`poll-question-${draft.key}`}>
-            Poll question
+          <label className="field-label" htmlFor={`poll-main-question-${draft.key}`}>
+            Main question / description
           </label>
-          <input
-            id={`poll-question-${draft.key}`}
-            className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
-            value={draft.question}
-            onChange={(event) => onChange({ ...draft, question: event.target.value })}
-            placeholder="Ask the app users a question"
+          <textarea
+            id={`poll-main-question-${draft.key}`}
+            className="field-input min-h-20 rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+            value={draft.mainQuestion}
+            onChange={(event) => onChange({ ...draft, mainQuestion: event.target.value })}
+            placeholder="What would you like to ask the members?"
           />
+          <p className="mt-1 text-xs text-[#5e766c]">
+            Shown first in the app. If left blank, the app uses the event details shown above the polls.
+          </p>
         </div>
         <button type="button" className="btn-ghost px-3 py-1 text-xs" onClick={onRemove}>
           {removeLabel}
         </button>
+      </div>
+
+      <div className="mt-3">
+        <label className="field-label" htmlFor={`poll-question-${draft.key}`}>
+          Poll question
+        </label>
+        <input
+          id={`poll-question-${draft.key}`}
+          className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+          value={draft.question}
+          onChange={(event) => onChange({ ...draft, question: event.target.value })}
+          placeholder="Which option would you prefer?"
+        />
       </div>
 
       <p className="mt-4 text-xs font-semibold uppercase text-[#5f6368]">Options</p>
@@ -248,6 +324,8 @@ function PollResultCard({
   poll,
   counts,
   total,
+  memberCount,
+  memberLabel,
   onEdit,
   onStatusChange,
   onDelete
@@ -255,12 +333,33 @@ function PollResultCard({
   poll: SavedPoll;
   counts: Map<string, number>;
   total: number;
+  memberCount: number;
+  memberLabel: string;
   onEdit: () => void;
   onStatusChange: (status: PollStatus) => void;
   onDelete: () => void;
 }) {
   const activeChoices = poll.choices.filter((choice) => !choice.archivedAt);
   const archivedChoices = poll.choices.filter((choice) => choice.archivedAt);
+  const archivedChoicesWithVotes = archivedChoices.filter(
+    (choice) => (counts.get(choice.rowId) ?? 0) > 0
+  );
+  const archivedChoicesWithoutVotes = archivedChoices.filter(
+    (choice) => (counts.get(choice.rowId) ?? 0) === 0
+  );
+  const pieSlices = [
+    ...activeChoices.map((choice) => ({
+      id: choice.rowId,
+      label: choice.text,
+      votes: counts.get(choice.rowId) ?? 0
+    })),
+    ...archivedChoicesWithVotes.map((choice) => ({
+      id: choice.rowId,
+      label: choice.text,
+      votes: counts.get(choice.rowId) ?? 0,
+      archived: true
+    }))
+  ];
 
   return (
     <article className="rounded-xl border border-[#cbd8d3] bg-white p-4 text-sm text-[#2f4d43]">
@@ -274,7 +373,18 @@ function PollResultCard({
               {total} {total === 1 ? "vote" : "votes"}
             </span>
           </div>
-          <p className="mt-2 font-semibold">{poll.question}</p>
+          <div className="mt-2 space-y-2">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">Main question</p>
+              <p className="font-semibold text-[#2f4d43]">
+                {poll.mainQuestion || "Not set - the app will show the event details."}
+              </p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">Poll question</p>
+              <p className="font-semibold text-[#2f4d43]">{poll.question}</p>
+            </div>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-1">
@@ -306,36 +416,21 @@ function PollResultCard({
         </div>
       </div>
 
-      <div className="mt-3 space-y-2">
-        {activeChoices.length === 0 ? (
+      <div className="mt-3">
+        {pieSlices.length === 0 ? (
           <p className="text-sm text-[#5e766c]">No active options. Edit this poll to add options.</p>
         ) : (
-          activeChoices.map((choice) => {
-            const count = counts.get(choice.rowId) ?? 0;
-            const percent = total > 0 ? Math.round((count / total) * 100) : 0;
-
-            return (
-              <div key={choice.rowId} className="rounded-xl border border-[#d6e1dd] bg-[#fbfdfc] px-3 py-2">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="flex-1">{choice.text}</span>
-                  <span className="text-xs font-semibold text-[#4f675e]">{count} ({percent}%)</span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#e3ece8]">
-                  <div className="h-full rounded-full bg-[#4285f4]" style={{ width: `${percent}%` }} />
-                </div>
-              </div>
-            );
-          })
+          <PollPieChart slices={pieSlices} memberCount={memberCount} memberLabel={memberLabel} />
         )}
       </div>
 
-      {archivedChoices.length > 0 ? (
+      {archivedChoicesWithoutVotes.length > 0 ? (
         <details className="mt-3 rounded-xl border border-[#d6e1dd] bg-[#f7f9f8] px-3 py-2">
           <summary className="cursor-pointer text-xs font-semibold text-[#5f6f68]">
-            Archived options ({archivedChoices.length})
+            Archived options with no votes ({archivedChoicesWithoutVotes.length})
           </summary>
           <div className="mt-2 space-y-1">
-            {archivedChoices.map((choice) => (
+            {archivedChoicesWithoutVotes.map((choice) => (
               <div key={choice.rowId} className="flex items-center justify-between gap-3 text-xs text-[#687a73]">
                 <span className="line-through">{choice.text}</span>
                 <span>{counts.get(choice.rowId) ?? 0} votes</span>
@@ -351,6 +446,8 @@ function PollResultCard({
 export default function EventsManagerPage() {
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
+  const [eventType, setEventType] = useState<EventType | "">("");
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [newEventPolls, setNewEventPolls] = useState<ReturnType<typeof createPollDraft>[]>([]);
   const [additionalPolls, setAdditionalPolls] = useState<ReturnType<typeof createPollDraft>[]>([]);
   const [editingPoll, setEditingPoll] = useState<ReturnType<typeof createPollDraft> | null>(null);
@@ -367,11 +464,17 @@ export default function EventsManagerPage() {
   const [selectedEventAttendance, setSelectedEventAttendance] = useState<EventAttendanceRow[]>([]);
   const [attendanceStatus, setAttendanceStatus] = useState("");
   const [submissions, setSubmissions] = useState<EventPollSubmission[]>([]);
+  const [memberCounts, setMemberCounts] = useState<MemberCounts | null>(null);
   const [pollSchemaReady, setPollSchemaReady] = useState(true);
   const [submissionSchemaReady, setSubmissionSchemaReady] = useState(true);
   const [status, setStatus] = useState("Manage events and publish them to the home page.");
   const [loading, setLoading] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<EventItem | null>(null);
+  const [deleteAttendanceCount, setDeleteAttendanceCount] = useState<number | null>(null);
+  const [deleteStep, setDeleteStep] = useState<"choice" | "confirm-attendance">("choice");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteChecking, setDeleteChecking] = useState(false);
   const [calendarRow, setCalendarRow] = useState<CalendarImageRow | null>(null);
   const [calendarSchemaReady, setCalendarSchemaReady] = useState(true);
   const [calendarFile, setCalendarFile] = useState<File | null>(null);
@@ -381,6 +484,7 @@ export default function EventsManagerPage() {
   const [calendarUploading, setCalendarUploading] = useState(false);
 
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null;
+  const memberDenominator = memberDenominatorFor(selectedEvent?.event_type ?? null, memberCounts);
 
   const selectedEventSuggestions = useMemo(
     () => (selectedEventId ? eventSuggestions.filter((row) => row.event_id === selectedEventId) : []),
@@ -425,13 +529,36 @@ export default function EventsManagerPage() {
 
     const { data, error } = await supabase
       .from("events")
-      .select("id, title, details, event_date, location, poster_url, created_at")
+      .select("id, title, details, event_date, location, poster_url, event_type, created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
       if (isMissingEventsTableError(error.message)) {
         setEvents([]);
         setStatus("Events table is missing. Run supabase/schema.sql in Supabase SQL Editor, then refresh this page.");
+        return;
+      }
+
+      if (isMissingEventTypeColumnError(error.message)) {
+        const fallback = await supabase
+          .from("events")
+          .select("id, title, details, event_date, location, poster_url, created_at")
+          .order("created_at", { ascending: false });
+
+        if (fallback.error) {
+          setStatus(`Failed to load events: ${fallback.error.message}`);
+          return;
+        }
+
+        const fallbackEvents = ((fallback.data ?? []) as Array<Omit<EventItem, "event_type">>).map((row) => ({
+          ...row,
+          event_type: null
+        }));
+        setEvents(fallbackEvents);
+        if (fallbackEvents.length > 0) {
+          setSelectedEventId((previous) => previous ?? fallbackEvents[0].id);
+        }
+        setStatus("Event type column is missing. Run the attendance migration to enable event categories.");
         return;
       }
 
@@ -443,6 +570,38 @@ export default function EventsManagerPage() {
     setEvents(nextEvents);
     if (nextEvents.length > 0) {
       setSelectedEventId((previous) => previous ?? nextEvents[0].id);
+    }
+  }, []);
+
+  const loadMemberCounts = useCallback(async () => {
+    if (!hasSupabaseEnv) return;
+
+    try {
+      const [activeResult, femaleResult, maleResult] = await Promise.all([
+        supabase.from("users").select("id", { count: "exact", head: true }).eq("is_active", true),
+        supabase
+          .from("users")
+          .select("id", { count: "exact", head: true })
+          .eq("is_active", true)
+          .eq("gender", "Female"),
+        supabase
+          .from("users")
+          .select("id", { count: "exact", head: true })
+          .eq("is_active", true)
+          .eq("gender", "Male")
+      ]);
+
+      if (activeResult.error || femaleResult.error || maleResult.error) {
+        return;
+      }
+
+      setMemberCounts({
+        active: activeResult.count ?? 0,
+        female: femaleResult.count ?? 0,
+        male: maleResult.count ?? 0
+      });
+    } catch {
+      // Leave counts unavailable; poll cards show a dash until they load.
     }
   }, []);
 
@@ -469,7 +628,7 @@ export default function EventsManagerPage() {
 
         setEventSuggestions((fallback.data ?? []) as EventSuggestion[]);
         setSuggestionStatus(
-          "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql in Supabase SQL Editor."
+          "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql in Supabase SQL Editor."
         );
         return;
       }
@@ -609,6 +768,7 @@ export default function EventsManagerPage() {
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       void loadEvents();
+      void loadMemberCounts();
       void loadSuggestions();
       void loadCalendar();
     }, 0);
@@ -616,7 +776,7 @@ export default function EventsManagerPage() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [loadCalendar, loadEvents, loadSuggestions]);
+  }, [loadCalendar, loadEvents, loadMemberCounts, loadSuggestions]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -699,12 +859,13 @@ export default function EventsManagerPage() {
 
     if (!pollSchemaReady) {
       setSuggestionStatus(
-        "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql first."
+        "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql first."
       );
       return false;
     }
 
     const pollKey = isUuid(draft.key) ? draft.key : crypto.randomUUID();
+    const mainQuestion = draft.mainQuestion.trim();
     const question = draft.question.trim();
     const choices = draft.choices
       .map((choice) => ({ ...choice, text: choice.text.trim() }))
@@ -724,6 +885,7 @@ export default function EventsManagerPage() {
       const rows = choices.map((choice, index) => ({
         event_id: eventId,
         suggestion_text: choice.text,
+        main_question: mainQuestion || null,
         suggestion_question_text: question,
         poll_key: pollKey,
         item_kind: "choice",
@@ -759,6 +921,7 @@ export default function EventsManagerPage() {
       const choice = choices[index];
       const choicePayload = {
         suggestion_text: choice.text,
+        main_question: mainQuestion || null,
         suggestion_question_text: question,
         poll_key: pollKey,
         item_kind: "choice",
@@ -862,7 +1025,7 @@ export default function EventsManagerPage() {
   const changePollStatus = async (poll: SavedPoll, nextStatus: PollStatus) => {
     if (!pollSchemaReady) {
       setSuggestionStatus(
-        "Poll status is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql first."
+        "Poll status is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql first."
       );
       return;
     }
@@ -950,6 +1113,7 @@ export default function EventsManagerPage() {
   const startEditingPoll = (poll: SavedPoll) => {
     setEditingPoll({
       key: poll.key,
+      mainQuestion: poll.mainQuestion,
       question: poll.question,
       status: poll.status,
       choices: poll.choices
@@ -963,32 +1127,92 @@ export default function EventsManagerPage() {
     });
   };
 
-  const deleteEvent = async (eventId: string) => {
+  const beginDeleteEvent = async (eventId: string) => {
     const eventToDelete = events.find((item) => item.id === eventId);
-    if (!eventToDelete || !window.confirm(`Delete "${eventToDelete.title}"?`)) return;
+    if (!eventToDelete) return;
 
-    setDeletingEventId(eventId);
-    const { error: unlinkError } = await supabase.from("attendance").update({ event_id: null }).eq("event_id", eventId);
-    if (unlinkError && !isMissingAttendanceEventIdError(unlinkError.message)) {
-      setStatus(`Failed to prepare event deletion: ${unlinkError.message}`);
+    setDeleteTarget(eventToDelete);
+    setDeleteStep("choice");
+    setDeleteError(null);
+    setDeleteAttendanceCount(null);
+    setDeleteChecking(true);
+
+    try {
+      const { count, error } = await supabase
+        .from("attendance")
+        .select("id", { count: "exact", head: true })
+        .eq("event_id", eventId);
+
+      if (error && !isMissingAttendanceEventIdError(error.message)) {
+        setDeleteError(`Failed to check linked attendance: ${error.message}`);
+        return;
+      }
+
+      setDeleteAttendanceCount(count ?? 0);
+    } catch (error) {
+      setDeleteError(
+        `Failed to check linked attendance: ${error instanceof Error ? error.message : "Unknown error."}`
+      );
+    } finally {
+      setDeleteChecking(false);
+    }
+  };
+
+  const closeDeleteModal = () => {
+    if (deletingEventId) return;
+
+    setDeleteTarget(null);
+    setDeleteStep("choice");
+    setDeleteAttendanceCount(null);
+    setDeleteError(null);
+    setDeleteChecking(false);
+  };
+
+  const runDeleteEvent = async (attendanceMode: "keep" | "delete") => {
+    if (!deleteTarget) return;
+
+    const target = deleteTarget;
+    setDeleteError(null);
+    setDeletingEventId(target.id);
+
+    try {
+      const { data, error } = await supabase.rpc("delete_event", {
+        p_event_id: target.id,
+        p_attendance_mode: attendanceMode
+      });
+
+      if (error) {
+        setDeleteError(formatDeleteEventError(error.message));
+        return;
+      }
+
+      const result = (data ?? null) as { attendance_count?: number } | null;
+      const attendanceCount = result?.attendance_count ?? deleteAttendanceCount ?? 0;
+
+      const remainingEvents = events.filter((item) => item.id !== target.id);
+      setEvents(remainingEvents);
+      setSelectedEventId((current) => current === target.id ? remainingEvents[0]?.id ?? null : current);
+      setEventSuggestions((previous) => previous.filter((item) => item.event_id !== target.id));
+      setSubmissions((previous) => previous.filter((item) => item.event_id !== target.id));
+      if (editingEventId === target.id) resetEventForm();
+
+      setDeleteTarget(null);
+      setDeleteStep("choice");
+      setDeleteAttendanceCount(null);
+      setStatus(
+        attendanceMode === "delete"
+          ? `"${target.title}" and ${attendanceCount} attendance record(s) were deleted.`
+          : attendanceCount > 0
+            ? `"${target.title}" was deleted; ${attendanceCount} attendance record(s) were kept.`
+            : `"${target.title}" was deleted.`
+      );
+    } catch (error) {
+      setDeleteError(
+        formatDeleteEventError(error instanceof Error ? error.message : "Unknown error.")
+      );
+    } finally {
       setDeletingEventId(null);
-      return;
     }
-
-    await supabase.from("EventPoll_Submissions").delete().eq("event_id", eventId);
-
-    const { error } = await supabase.from("events").delete().eq("id", eventId);
-    setDeletingEventId(null);
-    if (error) {
-      setStatus(`Failed to delete event: ${error.message}`);
-      return;
-    }
-
-    const remainingEvents = events.filter((item) => item.id !== eventId);
-    setEvents(remainingEvents);
-    setSelectedEventId((current) => current === eventId ? remainingEvents[0]?.id ?? null : current);
-    setEventSuggestions((previous) => previous.filter((item) => item.event_id !== eventId));
-    setStatus("Event deleted. Attendance records were kept; poll votes for the event were removed.");
   };
 
   const onPosterChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -1132,6 +1356,35 @@ export default function EventsManagerPage() {
     setCalendarStatusIsError(false);
   };
 
+  const resetEventForm = () => {
+    setTitle("");
+    setDetails("");
+    setEventType("");
+    setEditingEventId(null);
+    setNewEventPolls([]);
+    setLocation("");
+    setEventDate("");
+    setPosterUrl(null);
+  };
+
+  const startEditingEvent = (item: EventItem) => {
+    setEditingEventId(item.id);
+    setTitle(item.title);
+    setDetails(item.details ?? "");
+    setLocation(item.location ?? "");
+    setEventDate(item.event_date ?? "");
+    setPosterUrl(item.poster_url);
+    setEventType(item.event_type ?? "");
+    setNewEventPolls([]);
+    setSelectedEventId(item.id);
+    setStatus(
+      item.event_type
+        ? `Editing "${item.title}".`
+        : `Editing "${item.title}". Select an Event Type to complete the classification.`
+    );
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -1145,6 +1398,11 @@ export default function EventsManagerPage() {
       return;
     }
 
+    if (!isEventType(eventType)) {
+      setStatus("Event Type is required. Choose one of the five event categories.");
+      return;
+    }
+
     for (const poll of newEventPolls) {
       const validationError = validatePollDraft(poll);
       if (validationError) {
@@ -1153,19 +1411,90 @@ export default function EventsManagerPage() {
       }
     }
 
+    if (editingEventId) {
+      const originalEvent = events.find((item) => item.id === editingEventId);
+
+      if (!originalEvent) {
+        setStatus("This event no longer exists. Refresh the page and try again.");
+        return;
+      }
+
+      if (originalEvent.event_type !== eventType) {
+        const { data: linkedRows, error: linkedError } = await supabase
+          .from("attendance")
+          .select("attendance_context, attendance_group")
+          .eq("event_id", editingEventId);
+
+        if (linkedError) {
+          setStatus(`Failed to validate linked attendance: ${linkedError.message}`);
+          return;
+        }
+
+        const incompatible = ((linkedRows ?? []) as Array<{
+          attendance_context: string | null;
+          attendance_group: string | null;
+        }>).filter((row) => {
+          const linkedType = normalizeAttendanceType(row.attendance_context, row.attendance_group);
+          return !linkedType || !isEventCompatible(linkedType, eventType);
+        });
+
+        if (incompatible.length > 0) {
+          setStatus(
+            `Cannot change Event Type: ${incompatible.length} linked attendance record(s) use a different attendance type. Create a new event instead.`
+          );
+          return;
+        }
+      }
+
+      setLoading(true);
+      const { error } = await supabase
+        .from("events")
+        .update({
+          title: title.trim(),
+          details: details.trim() || null,
+          location: location.trim() || null,
+          event_date: eventDate || null,
+          poster_url: posterUrl,
+          event_type: eventType
+        })
+        .eq("id", editingEventId);
+      setLoading(false);
+
+      if (error) {
+        if (isMissingEventTypeColumnError(error.message)) {
+          setStatus("Event Type is not available yet. Run the attendance migration in Supabase SQL Editor first.");
+          return;
+        }
+
+        setStatus(`Failed to update event: ${error.message}`);
+        return;
+      }
+
+      resetEventForm();
+      await loadEvents();
+      setStatus("Event updated successfully.");
+      return;
+    }
+
     setLoading(true);
     const { data: createdEvent, error } = await supabase.from("events").insert({
       title: title.trim(),
       details: details.trim() || null,
       location: location.trim() || null,
       event_date: eventDate || null,
-      poster_url: posterUrl
+      poster_url: posterUrl,
+      event_type: eventType
     }).select("id").single();
     setLoading(false);
 
     if (error) {
       if (isMissingEventsTableError(error.message)) {
         setStatus("Cannot save event yet. Run supabase/schema.sql in Supabase SQL Editor first.");
+        return;
+      }
+
+      if (isMissingEventTypeColumnError(error.message)) {
+        setStatus("Event Type is not available yet. Run the attendance migration in Supabase SQL Editor first.");
         return;
       }
 
@@ -1179,12 +1508,7 @@ export default function EventsManagerPage() {
       if (!saved) pollsSaved = false;
     }
 
-    setTitle("");
-    setDetails("");
-    setNewEventPolls([]);
-    setLocation("");
-    setEventDate("");
-    setPosterUrl(null);
+    resetEventForm();
     setSelectedEventId(createdEvent.id);
     await loadEvents();
     await loadSuggestions();
@@ -1205,6 +1529,17 @@ export default function EventsManagerPage() {
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
         <form className="card space-y-4" onSubmit={onSubmit}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">
+              {editingEventId ? "Edit Event" : "Add Event"}
+            </h2>
+            {editingEventId ? (
+              <button type="button" className="btn-ghost px-3 py-1 text-xs" onClick={resetEventForm}>
+                Cancel Edit
+              </button>
+            ) : null}
+          </div>
+
           <div>
             <label className="field-label">Event Title</label>
             <input className="field-input" value={title} onChange={(event) => setTitle(event.target.value)} />
@@ -1219,35 +1554,61 @@ export default function EventsManagerPage() {
             />
           </div>
 
-          <div className="space-y-3">
+          <div>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Polls</h2>
-              <button
-                type="button"
-                className="btn-ghost px-3 py-1 text-xs"
-                onClick={() => setNewEventPolls((previous) => [...previous, createPollDraft()])}
-              >
-                + Add poll
-              </button>
+              <label className="field-label" htmlFor="event-type">Event Type</label>
+              <span className="rounded-full border border-[#9bb6ad] bg-[#edf5f2] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#2f5145]">
+                Required
+              </span>
             </div>
-            <p className="text-xs text-[#5e766c]">
-              The question is separate from the options. App users vote on open polls.
+            <select
+              id="event-type"
+              className="field-input"
+              value={eventType}
+              onChange={(event) => setEventType(event.target.value as EventType | "")}
+              required
+            >
+              <option value="">Select event type</option>
+              {EVENT_TYPES.map((type) => (
+                <option key={type} value={type}>{type}</option>
+              ))}
+            </select>
+            <p className="mt-2 text-xs text-[#5e766c]">
+              Used to filter the Linked Event dropdown on the Scan page. Prayer Meeting is an attendance type only; Prayer scans can link General events.
             </p>
-            {newEventPolls.map((poll, pollIndex) => (
-              <PollDraftEditor
-                key={poll.key}
-                draft={poll}
-                onChange={(nextDraft) =>
-                  setNewEventPolls((previous) =>
-                    previous.map((item, index) => index === pollIndex ? nextDraft : item)
-                  )
-                }
-                onRemove={() =>
-                  setNewEventPolls((previous) => previous.filter((item) => item.key !== poll.key))
-                }
-              />
-            ))}
           </div>
+
+          {!editingEventId ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Polls</h2>
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1 text-xs"
+                  onClick={() => setNewEventPolls((previous) => [...previous, createPollDraft()])}
+                >
+                  + Add poll
+                </button>
+              </div>
+              <p className="text-xs text-[#5e766c]">
+                The main question, poll question, and options are stored separately. App users vote once per open poll.
+              </p>
+              {newEventPolls.map((poll, pollIndex) => (
+                <PollDraftEditor
+                  key={poll.key}
+                  draft={poll}
+                  onChange={(nextDraft) =>
+                    setNewEventPolls((previous) =>
+                      previous.map((item, index) => index === pollIndex ? nextDraft : item)
+                    )
+                  }
+                  onRemove={() =>
+                    setNewEventPolls((previous) => previous.filter((item) => item.key !== poll.key))
+                  }
+                />
+              ))}
+            </div>
+          ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -1276,7 +1637,9 @@ export default function EventsManagerPage() {
             </div>
           ) : null}
           <button className="btn-primary" disabled={loading} type="submit">
-            {loading ? "Saving..." : "Save Event"}
+            {loading
+              ? editingEventId ? "Updating..." : "Saving..."
+              : editingEventId ? "Update Event" : "Save Event"}
           </button>
           <div className="status-info">{status}</div>
         </form>
@@ -1307,19 +1670,47 @@ export default function EventsManagerPage() {
                       <p className="mt-1 text-xs text-[#5e766c]">
                         {item.event_date ?? "No date"} {item.location ? `• ${item.location}` : ""}
                       </p>
-                      {item.details ? <p className="mt-1 text-sm text-[#3e5850] line-clamp-2">{item.details}</p> : null}
+                      <span
+                        className={
+                          item.event_type
+                            ? "mt-2 inline-block rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#245142]"
+                            : "mt-2 inline-block rounded-full border border-[#e3c98f] bg-[#fdf6e6] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#7a5a17]"
+                        }
+                      >
+                        {item.event_type ?? "Needs review"}
+                      </span>
+                      {item.details ? <p className="mt-2 text-sm text-[#3e5850] line-clamp-2">{item.details}</p> : null}
                     </div>
-                    <button
-                      type="button"
-                      className="btn-ghost shrink-0 px-3 py-1 text-xs text-[#8a3f46]"
-                      disabled={deletingEventId === item.id}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void deleteEvent(item.id);
-                      }}
-                    >
-                      {deletingEventId === item.id ? "Deleting..." : "Delete"}
-                    </button>
+                    <div className="flex shrink-0 flex-col gap-2">
+                      <button
+                        type="button"
+                        className="btn-ghost px-3 py-1 text-xs"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          startEditingEvent(item);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost px-3 py-1 text-xs text-[#8a3f46]"
+                        disabled={
+                          deletingEventId === item.id ||
+                          (deleteChecking && deleteTarget?.id === item.id)
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void beginDeleteEvent(item.id);
+                        }}
+                      >
+                        {deletingEventId === item.id
+                          ? "Deleting..."
+                          : deleteChecking && deleteTarget?.id === item.id
+                            ? "Checking..."
+                            : "Delete"}
+                      </button>
+                    </div>
                   </div>
                 </article>
               ))
@@ -1417,7 +1808,27 @@ export default function EventsManagerPage() {
         ) : (
           <div className="mt-4 space-y-4">
             <div className="rounded-2xl border border-[#bdd0c9] bg-white p-4 shadow-[0_8px_18px_rgba(56,91,79,0.06)]">
-              <p className="font-[var(--font-heading)] text-xl text-[#243730]">{selectedEvent.title}</p>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="font-[var(--font-heading)] text-xl text-[#243730]">{selectedEvent.title}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={
+                      selectedEvent.event_type
+                        ? "rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#245142]"
+                        : "rounded-full border border-[#e3c98f] bg-[#fdf6e6] px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#7a5a17]"
+                    }
+                  >
+                    {selectedEvent.event_type ?? "Needs review"}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-ghost px-3 py-1 text-xs"
+                    onClick={() => startEditingEvent(selectedEvent)}
+                  >
+                    Edit
+                  </button>
+                </div>
+              </div>
               <p className="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#5e766c]">
                 {selectedEvent.event_date ?? "No date"}
                 {selectedEvent.location ? ` • ${selectedEvent.location}` : ""}
@@ -1453,7 +1864,7 @@ export default function EventsManagerPage() {
                 <div>
                   <h3 className="font-[var(--font-heading)] text-lg text-[#23332d]">Polls</h3>
                   <p className="mt-1 text-xs text-[#5e766c]">
-                    Results are read-only here. App users vote and can change their vote while a poll is open.
+                    Results are read-only here. App users can submit one vote per poll while it is open.
                   </p>
                 </div>
                 <button
@@ -1468,7 +1879,7 @@ export default function EventsManagerPage() {
 
               {!pollSchemaReady ? (
                 <p className="status-error">
-                  Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql in the Supabase SQL Editor.
+                  Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql in the Supabase SQL Editor.
                 </p>
               ) : null}
               {submissionStatus ? <p className="status-info">{submissionStatus}</p> : null}
@@ -1484,6 +1895,8 @@ export default function EventsManagerPage() {
                     poll={poll}
                     counts={voteSummary.counts}
                     total={pollVoteTotal(poll)}
+                    memberCount={memberDenominator.count}
+                    memberLabel={memberDenominator.label}
                     onEdit={() => startEditingPoll(poll)}
                     onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
                     onDelete={() => void deletePoll(poll)}
@@ -1509,6 +1922,8 @@ export default function EventsManagerPage() {
                           poll={poll}
                           counts={voteSummary.counts}
                           total={pollVoteTotal(poll)}
+                          memberCount={memberDenominator.count}
+                          memberLabel={memberDenominator.label}
                           onEdit={() => startEditingPoll(poll)}
                           onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
                           onDelete={() => void deletePoll(poll)}
@@ -1634,6 +2049,131 @@ export default function EventsManagerPage() {
           </div>
         )}
       </section>
+
+      {deleteTarget ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1b2a25]/45 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-event-title"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-[#d8c3c5] bg-[#eaeaea] p-5 shadow-2xl">
+            <h2 id="delete-event-title" className="font-[var(--font-heading)] text-xl text-[#3a282a]">
+              {deleteStep === "confirm-attendance" ? "Permanently delete attendance?" : "Delete event?"}
+            </h2>
+
+            {deleteChecking ? (
+              <p className="mt-3 text-sm text-[#5b4547]">Checking linked attendance...</p>
+            ) : deleteError && deleteAttendanceCount === null ? (
+              <p className="mt-3 text-sm text-[#5b4547]">
+                Could not check linked attendance. Close this dialog and try again.
+              </p>
+            ) : deleteStep === "confirm-attendance" ? (
+              <p className="mt-3 text-sm text-[#5b4547]">
+                This permanently deletes{" "}
+                <span className="font-semibold">{deleteAttendanceCount ?? 0} attendance record(s)</span> for{" "}
+                <span className="font-semibold">{deleteTarget.title}</span>, along with the event, its polls, votes,
+                and suggestions. This cannot be undone.
+              </p>
+            ) : (deleteAttendanceCount ?? 0) > 0 ? (
+              <p className="mt-3 text-sm text-[#5b4547]">
+                <span className="font-semibold">{deleteTarget.title}</span> has{" "}
+                <span className="font-semibold">{deleteAttendanceCount} attendance record(s)</span> linked to it. What
+                should happen to them?
+              </p>
+            ) : (
+              <p className="mt-3 text-sm text-[#5b4547]">
+                Are you sure you want to delete <span className="font-semibold">{deleteTarget.title}</span>
+                {deleteTarget.event_date ? ` on ${formatEventDate(deleteTarget.event_date)}` : ""}? This cannot be
+                undone.
+              </p>
+            )}
+
+            {deleteError ? (
+              <p className="mt-3 rounded-xl border border-[#e2b9bb] bg-[#f8eded] px-3 py-2 text-sm text-[#7a3237]">
+                {deleteError}
+              </p>
+            ) : null}
+
+            <div className="mt-5 flex flex-col gap-2">
+              {deleteChecking ? (
+                <button type="button" className="btn-ghost w-full" onClick={closeDeleteModal}>
+                  Cancel
+                </button>
+              ) : deleteStep === "confirm-attendance" ? (
+                <>
+                  <button
+                    type="button"
+                    className="inline-flex w-full items-center justify-center rounded-full bg-[#8a3f46] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#73343a] disabled:opacity-50"
+                    onClick={() => void runDeleteEvent("delete")}
+                    disabled={Boolean(deletingEventId)}
+                  >
+                    {deletingEventId ? "Deleting..." : "Yes, delete records and event"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost w-full"
+                    onClick={() => setDeleteStep("choice")}
+                    disabled={Boolean(deletingEventId)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : deleteAttendanceCount === null ? (
+                <button type="button" className="btn-ghost w-full" onClick={closeDeleteModal}>
+                  Close
+                </button>
+              ) : (deleteAttendanceCount ?? 0) > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-primary w-full"
+                    onClick={() => void runDeleteEvent("keep")}
+                    disabled={Boolean(deletingEventId)}
+                  >
+                    {deletingEventId ? "Deleting..." : "Keep attendance & delete event"}
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex w-full items-center justify-center rounded-full border border-[#c9a6aa] px-4 py-2.5 text-sm font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:opacity-50"
+                    onClick={() => setDeleteStep("confirm-attendance")}
+                    disabled={Boolean(deletingEventId)}
+                  >
+                    Delete attendance &amp; event
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost w-full"
+                    onClick={closeDeleteModal}
+                    disabled={Boolean(deletingEventId)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="inline-flex w-full items-center justify-center rounded-full bg-[#8a3f46] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#73343a] disabled:opacity-50"
+                    onClick={() => void runDeleteEvent("keep")}
+                    disabled={Boolean(deletingEventId) || deleteAttendanceCount === null}
+                  >
+                    {deletingEventId ? "Deleting..." : "Delete event"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost w-full"
+                    onClick={closeDeleteModal}
+                    disabled={Boolean(deletingEventId)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

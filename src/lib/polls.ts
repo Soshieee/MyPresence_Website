@@ -16,6 +16,7 @@ export type PollChoiceDraft = {
 
 export type PollDraft = {
   key: string;
+  mainQuestion: string;
   question: string;
   status: PollStatus;
   choices: PollChoiceDraft[];
@@ -56,6 +57,7 @@ export function createPollChoice(text = ""): PollChoiceDraft {
 export function createPollDraft(): PollDraft {
   return {
     key: crypto.randomUUID(),
+    mainQuestion: "",
     question: "",
     status: "open",
     choices: [createPollChoice(), createPollChoice()]

@@ -5,6 +5,7 @@ import Webcam from "react-webcam";
 import * as faceapi from "face-api.js";
 import { loadFaceApiModels, getFaceDetectorOptions } from "@/lib/faceApi";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
+import { isMissingActiveColumnError } from "@/lib/attendance";
 import { extractLivenessMetrics } from "@/lib/liveness";
 
 type RegisterStatusType = "idle" | "info" | "success" | "error";
@@ -247,17 +248,35 @@ export default function RegisterPage() {
         }
         const memberId = generateMemberId();
 
-        const { error } = await supabase.from("users").upsert(
-          {
-            student_id: memberId,
-            full_name: fullName.trim(),
-            age: parsedAge,
-            gender,
-            newcomer,
-            descriptor: descriptorArray
-          },
+        const memberPayload = {
+          student_id: memberId,
+          full_name: fullName.trim(),
+          age: parsedAge,
+          gender,
+          newcomer,
+          is_active: true,
+          descriptor: descriptorArray
+        };
+
+        let { error } = await supabase.from("users").upsert(
+          memberPayload,
           { onConflict: "student_id" }
         );
+
+        if (error && isMissingActiveColumnError(error.message)) {
+          const fallback = await supabase.from("users").upsert(
+            {
+              student_id: memberId,
+              full_name: fullName.trim(),
+              age: parsedAge,
+              gender,
+              newcomer,
+              descriptor: descriptorArray
+            },
+            { onConflict: "student_id" }
+          );
+          error = fallback.error;
+        }
 
         if (error) {
           throw error;

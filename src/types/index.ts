@@ -1,3 +1,5 @@
+import type { AttendanceType, EventType, SundaySession } from "@/lib/attendance";
+
 export type UserFace = {
   id: string;
   student_id: string;
@@ -5,6 +7,7 @@ export type UserFace = {
   age: number | null;
   gender: "Male" | "Female" | "Other" | null;
   newcomer: boolean;
+  is_active?: boolean | null;
   descriptor: number[];
   created_at: string;
 };
@@ -14,17 +17,9 @@ export type AttendanceLog = {
   student_id: string;
   full_name: string;
   was_newcomer: boolean;
-  attendance_context: "Sunday Service" | "Events" | "Prayer Meeting" | null;
-  attendance_group:
-    | "First Service"
-    | "Second Service"
-    | "Prayer Meeting"
-    | "Rooftop"
-    | "Men's Network"
-    | "Women's Network"
-    | "Male"
-    | "Female"
-    | null;
+  attendance_context: AttendanceType | null;
+  attendance_group: string | null;
+  service_type?: SundaySession | null;
   event_id?: string | null;
   attended_date: string;
   attended_at: string;
@@ -37,6 +32,7 @@ export type EventItem = {
   event_date: string | null;
   location: string | null;
   poster_url: string | null;
+  event_type: EventType | null;
   created_at: string;
 };
 
@@ -46,6 +42,7 @@ export type EventSuggestion = {
   id: string;
   event_id: string;
   suggestion_text: string;
+  main_question?: string | null;
   suggestion_question_text?: string | null;
   created_at: string;
   poll_key?: string | null;

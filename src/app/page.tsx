@@ -9,6 +9,8 @@ import { AttendanceLog, CalendarImageRow, EventItem, UserFace } from "@/types";
 import LineChart from "@/components/line-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
+import { isMissingEventTypeColumnError } from "@/lib/attendance";
+import { toLocalDateInput } from "@/lib/date";
 
 type AnalyticsView = "mix" | "eventAttendance" | "funnel";
 const MIN_ANALYTICS_DATE = "2026-01-01";
@@ -44,9 +46,8 @@ export default function HomePage() {
 
   const range = useMemo(() => {
     const today = new Date();
-    const format = (date: Date) => date.toISOString().slice(0, 10);
 
-    const day = format(today);
+    const day = toLocalDateInput(today);
     return { from: day < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : day, to: day };
   }, []);
 
@@ -134,13 +135,28 @@ export default function HomePage() {
       let eventRows: EventItem[] = [];
       const eventsResult = await supabase
         .from("events")
-        .select("id, title, event_date, location, poster_url, created_at")
+        .select("id, title, event_date, location, poster_url, event_type, created_at")
         .order("event_date", { ascending: true })
         .limit(6);
 
       if (eventsResult.error) {
         if (isMissingEventsTableError(eventsResult.error.message)) {
           warnings.push("Events table is missing. Run supabase/schema.sql to enable event manager and home event cards.");
+        } else if (isMissingEventTypeColumnError(eventsResult.error.message)) {
+          const eventsFallback = await supabase
+            .from("events")
+            .select("id, title, event_date, location, poster_url, created_at")
+            .order("event_date", { ascending: true })
+            .limit(6);
+
+          if (eventsFallback.error) {
+            warnings.push(`Events could not be loaded: ${eventsFallback.error.message}`);
+          } else {
+            eventRows = ((eventsFallback.data ?? []) as Array<Omit<EventItem, "event_type">>).map((row) => ({
+              ...row,
+              event_type: null
+            }));
+          }
         } else {
           setStatus(`Failed to load dashboard: ${eventsResult.error.message}`);
           return;

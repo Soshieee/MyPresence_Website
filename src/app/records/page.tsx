@@ -6,10 +6,25 @@ import { AttendanceLog, UserFace } from "@/types";
 import LineChart from "@/components/line-chart";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, NetworkKey, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
+import {
+  ATTENDANCE_TYPES,
+  AttendanceType,
+  isMissingEventTypeColumnError,
+  isMissingServiceTypeColumnError,
+  normalizeAttendanceType,
+  normalizeServiceType,
+  serviceSessionForLog
+} from "@/lib/attendance";
+import { toLocalDateInput } from "@/lib/date";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
-type AttendanceTypeFilter = "all" | "Sunday Service" | "Events" | "Prayer Meeting";
+type AttendanceTypeFilter = "all" | AttendanceType;
+type EventLookup = {
+  title: string;
+  eventType: string | null;
+};
 const MIN_ANALYTICS_DATE = "2026-01-01";
+const RECORDS_PAGE_SIZE = 25;
 
 type AttendanceGroup =
   | "First Service"
@@ -60,31 +75,32 @@ export default function AttendanceRecordsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [eventLookup, setEventLookup] = useState<Record<string, EventLookup>>({});
+  const [page, setPage] = useState(1);
 
   const range = useMemo(() => {
     const today = new Date();
-    const format = (date: Date) => date.toISOString().slice(0, 10);
 
     if (rangePreset === "today") {
-      const day = format(today);
+      const day = toLocalDateInput(today);
       return { from: day < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : day, to: day };
     }
 
     if (rangePreset === "7d") {
       const from = new Date(today);
       from.setDate(from.getDate() - 6);
-      const nextFrom = format(from);
-      return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: format(today) };
+      const nextFrom = toLocalDateInput(from);
+      return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: toLocalDateInput(today) };
     }
 
     if (rangePreset === "30d") {
       const from = new Date(today);
       from.setDate(from.getDate() - 29);
-      const nextFrom = format(from);
-      return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: format(today) };
+      const nextFrom = toLocalDateInput(from);
+      return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: toLocalDateInput(today) };
     }
 
-    const fallback = format(today);
+    const fallback = toLocalDateInput(today);
     const rawFrom = fromDate || fallback;
     const rawTo = toDate || fallback;
     const clampedFrom = rawFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : rawFrom;
@@ -116,7 +132,7 @@ export default function AttendanceRecordsPage() {
     try {
       const query = supabase
         .from("attendance")
-        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
+        .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, service_type, event_id, attended_date, attended_at")
         .gte("attended_date", range.from)
         .lte("attended_date", range.to)
         .order("attended_at", { ascending: false });
@@ -130,16 +146,63 @@ export default function AttendanceRecordsPage() {
 
       const eventsResult = await supabase
         .from("events")
-        .select("id, title, event_date")
+        .select("id, title, event_date, event_type")
         .order("event_date", { ascending: true });
 
       if (!eventsResult.error) {
-        setLinkedEvents((eventsResult.data ?? []) as LinkedEvent[]);
+        const eventRows = (eventsResult.data ?? []) as Array<{
+          id: string;
+          title: string;
+          event_date: string | null;
+          event_type: string | null;
+        }>;
+        const lookup: Record<string, EventLookup> = {};
+        for (const event of eventRows) {
+          lookup[event.id] = { title: event.title, eventType: event.event_type };
+        }
+        setLinkedEvents(eventRows.map(({ id, title, event_date }) => ({ id, title, event_date })));
+        setEventLookup(lookup);
+      } else if (isMissingEventTypeColumnError(eventsResult.error.message)) {
+        const eventsFallback = await supabase
+          .from("events")
+          .select("id, title, event_date")
+          .order("event_date", { ascending: true });
+
+        if (!eventsFallback.error) {
+          const eventRows = (eventsFallback.data ?? []) as LinkedEvent[];
+          const lookup: Record<string, EventLookup> = {};
+          for (const event of eventRows) {
+            lookup[event.id] = { title: event.title, eventType: null };
+          }
+          setLinkedEvents(eventRows);
+          setEventLookup(lookup);
+        }
       } else {
         setLinkedEvents([]);
+        setEventLookup({});
       }
 
       if (fetchError) {
+        if (isMissingServiceTypeColumnError(fetchError.message)) {
+          const fallbackQuery = supabase
+            .from("attendance")
+            .select("id, student_id, full_name, was_newcomer, attendance_context, attendance_group, event_id, attended_date, attended_at")
+            .gte("attended_date", range.from)
+            .lte("attended_date", range.to)
+            .order("attended_at", { ascending: false });
+
+          const { data: fallbackData, error: fallbackError } = await fallbackQuery;
+          if (fallbackError) throw fallbackError;
+
+          setLogs(
+            ((fallbackData ?? []) as AttendanceLog[]).map((row) => ({
+              ...row,
+              service_type: normalizeServiceType(row.attendance_context, null, row.attendance_group)
+            }))
+          );
+          return;
+        }
+
         if (isMissingClassificationColumnError(fetchError.message)) {
           const fallbackQuery = supabase
             .from("attendance")
@@ -157,6 +220,7 @@ export default function AttendanceRecordsPage() {
               was_newcomer: false,
               attendance_context: null,
               attendance_group: null,
+              service_type: null,
               event_id: null
             }))
           );
@@ -256,7 +320,6 @@ export default function AttendanceRecordsPage() {
 
   const handleAttendanceTypeChange = useCallback((filter: AttendanceTypeFilter) => {
     setAttendanceTypeFilter(filter);
-    setSelectedLinkedEventId(null);
   }, []);
 
   const filteredLogs = useMemo(() => {
@@ -265,30 +328,35 @@ export default function AttendanceRecordsPage() {
       const matchesNetwork =
         selectedNetworkSet.size === 0 || (userNetwork ? selectedNetworkSet.has(userNetwork) : false);
 
-      // event_id is the reliable link for event attendance; older rows may use
-      // a network name as their context/group instead of the "Events" context.
-      let matchesAttendanceType = false;
-      if (attendanceTypeFilter === "all") {
-        matchesAttendanceType = true;
-      } else if (attendanceTypeFilter === "Events") {
-        matchesAttendanceType = selectedLinkedEventId
-          ? log.event_id === selectedLinkedEventId
-          : Boolean(log.event_id) || log.attendance_context === "Events";
-      } else {
-        matchesAttendanceType = log.attendance_context === attendanceTypeFilter;
-      }
+      const matchesAttendanceType =
+        attendanceTypeFilter === "all" ||
+        normalizeAttendanceType(log.attendance_context, log.attendance_group) === attendanceTypeFilter;
+
+      const matchesLinkedEvent =
+        !selectedLinkedEventId || log.event_id === selectedLinkedEventId;
 
       const matchesSearch =
         normalizedSearch.length === 0 ||
         log.full_name.toLowerCase().includes(normalizedSearch) ||
         log.student_id.toLowerCase().includes(normalizedSearch);
 
-      return matchesNetwork && matchesAttendanceType && matchesSearch;
+      return matchesNetwork && matchesAttendanceType && matchesLinkedEvent && matchesSearch;
     });
   }, [attendanceTypeFilter, logs, normalizedSearch, selectedLinkedEventId, selectedNetworkSet, userNetworkMap]);
 
   const hasNoRecordsForSelectedLinkedEvent =
-    attendanceTypeFilter === "Events" && Boolean(selectedLinkedEventId) && filteredLogs.length === 0;
+    Boolean(selectedLinkedEventId) && filteredLogs.length === 0;
+
+  useEffect(() => {
+    setPage(1);
+  }, [attendanceTypeFilter, normalizedSearch, range.from, range.to, selectedLinkedEventId, selectedNetworkSet]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / RECORDS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedLogs = filteredLogs.slice(
+    (currentPage - 1) * RECORDS_PAGE_SIZE,
+    currentPage * RECORDS_PAGE_SIZE
+  );
 
   const dailyTotals = useMemo(() => {
     const map = new Map<string, number>();
@@ -342,26 +410,35 @@ export default function AttendanceRecordsPage() {
   }, [filteredLogs, userNetworkMap]);
 
   const attendanceByContext = useMemo(() => {
-    const counts = {
+    const counts: Record<AttendanceType | "Unknown", number> = {
       "Sunday Service": 0,
-      "Linked Events": 0,
       "Prayer Meeting": 0,
+      Rooftop: 0,
+      "Women's Network": 0,
+      "Men's Network": 0,
       Unknown: 0
     };
 
     for (const log of filteredLogs) {
-      if (log.event_id) counts["Linked Events"] += 1;
-      else if (log.attendance_context === "Sunday Service") counts["Sunday Service"] += 1;
-      else if (log.attendance_context === "Prayer Meeting") counts["Prayer Meeting"] += 1;
+      const type = normalizeAttendanceType(log.attendance_context, log.attendance_group);
+      if (type) counts[type] += 1;
       else counts.Unknown += 1;
     }
 
-    return [
-      { label: "Sunday Service", value: counts["Sunday Service"], color: "#1d4ed8" },
-      { label: "Linked Events", value: counts["Linked Events"], color: "#0f766e" },
-      { label: "Prayer Meeting", value: counts["Prayer Meeting"], color: "#f59e0b" },
-      { label: "Unknown", value: counts.Unknown, color: "#64748b" }
-    ];
+    const colors: Record<AttendanceType | "Unknown", string> = {
+      "Sunday Service": "#1d4ed8",
+      "Prayer Meeting": "#f59e0b",
+      Rooftop: "#8b5cf6",
+      "Women's Network": "#ef4444",
+      "Men's Network": "#10b981",
+      Unknown: "#64748b"
+    };
+
+    return [...ATTENDANCE_TYPES, "Unknown" as const].map((label) => ({
+      label,
+      value: counts[label],
+      color: colors[label]
+    }));
   }, [filteredLogs]);
 
   const attendanceByLinkedEvent = useMemo(() => {
@@ -564,70 +641,53 @@ export default function AttendanceRecordsPage() {
           </button>
         </div>
 
-        <p className="field-label">Filter By Attendance Type</p>
+        <p className="field-label">Filter by Attendance Type</p>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => handleAttendanceTypeChange("all")}
             className={attendanceTypeFilter === "all" ? "btn-primary" : "btn-ghost"}
           >
-            All Types
+            All Attendance Types
           </button>
-          <button
-            type="button"
-            onClick={() => handleAttendanceTypeChange("Sunday Service")}
-            className={attendanceTypeFilter === "Sunday Service" ? "btn-primary" : "btn-ghost"}
-          >
-            Sunday Service
-          </button>
-          <button
-            type="button"
-            onClick={() => handleAttendanceTypeChange("Events")}
-            className={attendanceTypeFilter === "Events" ? "btn-primary" : "btn-ghost"}
-          >
-            Events
-          </button>
-          <button
-            type="button"
-            onClick={() => handleAttendanceTypeChange("Prayer Meeting")}
-            className={attendanceTypeFilter === "Prayer Meeting" ? "btn-primary" : "btn-ghost"}
-          >
-            Prayer Meeting
-          </button>
+          {ATTENDANCE_TYPES.map((type) => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => setAttendanceTypeFilter(type)}
+              className={attendanceTypeFilter === type ? "btn-primary" : "btn-ghost"}
+            >
+              {type}
+            </button>
+          ))}
         </div>
 
-        {attendanceTypeFilter === "Events" ? (
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="w-full sm:max-w-sm">
-              <label className="field-label" htmlFor="linked-event-filter">
-                Filter By Linked Event
-              </label>
-              <select
-                id="linked-event-filter"
-                className="field-input"
-                value={selectedLinkedEventId ?? ""}
-                onChange={(event) => {
-                  const eventId = event.target.value || null;
-                  setAttendanceTypeFilter("Events");
-                  setSelectedLinkedEventId(eventId);
-                }}
-                disabled={linkedEventOptions.length === 0}
-              >
-                <option value="">All Linked Events</option>
-                {linkedEventOptions.map((event) => (
-                  <option key={event.id} value={event.id}>
-                    {event.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {selectedLinkedEventId ? (
-              <button type="button" onClick={() => setSelectedLinkedEventId(null)} className="btn-ghost">
-                Clear Event
-              </button>
-            ) : null}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-full sm:max-w-sm">
+            <label className="field-label" htmlFor="linked-event-filter">
+              Filter By Linked Event
+            </label>
+            <select
+              id="linked-event-filter"
+              className="field-input"
+              value={selectedLinkedEventId ?? ""}
+              onChange={(event) => setSelectedLinkedEventId(event.target.value || null)}
+              disabled={linkedEventOptions.length === 0}
+            >
+              <option value="">All Linked Events</option>
+              {linkedEventOptions.map((event) => (
+                <option key={event.id} value={event.id}>
+                  {event.label}
+                </option>
+              ))}
+            </select>
           </div>
-        ) : null}
+          {selectedLinkedEventId ? (
+            <button type="button" onClick={() => setSelectedLinkedEventId(null)} className="btn-ghost">
+              Clear Event
+            </button>
+          ) : null}
+        </div>
 
         <div>
           <label className="field-label" htmlFor="record-search">
@@ -651,6 +711,87 @@ export default function AttendanceRecordsPage() {
           No attendance records for {selectedLinkedEventLabel ?? "the selected linked event"} in the selected date range.
         </div>
       ) : null}
+
+      <section className="card overflow-x-auto">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">Attendance Records</h2>
+            <p className="mt-1 text-xs text-[#5e766c]">
+              Each row shows the saved attendance type separately from the linked event type.
+            </p>
+          </div>
+          <p className="text-sm font-semibold text-[#35564a]">{filteredLogs.length} records</p>
+        </div>
+
+        {filteredLogs.length === 0 ? (
+          <p className="mt-4 text-sm text-[#4f675e]">No attendance records match the selected filters.</p>
+        ) : (
+          <>
+            <table className="mt-4 min-w-full border-separate border-spacing-y-2 text-sm">
+              <thead>
+                <tr className="text-left text-[#4f675e]">
+                  <th className="px-3 py-2 font-semibold">Member Name</th>
+                  <th className="px-3 py-2 font-semibold">Member ID</th>
+                  <th className="px-3 py-2 font-semibold">Attendance Type</th>
+                  <th className="px-3 py-2 font-semibold">Service Session</th>
+                  <th className="px-3 py-2 font-semibold">Event Name</th>
+                  <th className="px-3 py-2 font-semibold">Event Type</th>
+                  <th className="px-3 py-2 font-semibold">Attendance Date</th>
+                  <th className="px-3 py-2 font-semibold">Attendance Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedLogs.map((log) => {
+                  const attendanceType = normalizeAttendanceType(
+                    log.attendance_context,
+                    log.attendance_group
+                  );
+                  const linkedEvent = log.event_id ? eventLookup[log.event_id] : null;
+
+                  return (
+                    <tr key={log.id} className="rounded-xl bg-white/85 text-[#30463f] shadow-[0_6px_16px_rgba(56,91,79,0.08)]">
+                      <td className="rounded-l-xl px-3 py-2.5 font-semibold">{log.full_name}</td>
+                      <td className="px-3 py-2.5">{log.student_id}</td>
+                      <td className="px-3 py-2.5">{attendanceType ?? "Unknown"}</td>
+                      <td className="px-3 py-2.5">{serviceSessionForLog(log)}</td>
+                      <td className="px-3 py-2.5">{linkedEvent?.title ?? "N/A"}</td>
+                      <td className="px-3 py-2.5">{linkedEvent?.eventType ?? "N/A"}</td>
+                      <td className="px-3 py-2.5">{formatDateMMDDYY(log.attended_date)}</td>
+                      <td className="rounded-r-xl px-3 py-2.5">
+                        {new Date(log.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs font-semibold text-[#5e766c]">
+                Page {currentPage} of {totalPages} • showing {pagedLogs.length} of {filteredLogs.length} records
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  onClick={() => setPage((previous) => Math.max(1, previous - 1))}
+                  disabled={currentPage <= 1}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  onClick={() => setPage((previous) => Math.min(totalPages, previous + 1))}
+                  disabled={currentPage >= totalPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
 
       <section className="analytics-panel">
         <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Analytics Overview</h2>

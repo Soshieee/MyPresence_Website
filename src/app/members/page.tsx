@@ -2,6 +2,13 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
+import { toLocalDateInput } from "@/lib/date";
+import {
+  isMissingActiveColumnError,
+  isMissingServiceTypeColumnError,
+  normalizeAttendanceType,
+  normalizeServiceType
+} from "@/lib/attendance";
 
 type MemberRow = {
   id: string;
@@ -10,8 +17,11 @@ type MemberRow = {
   age: number | null;
   gender: "Male" | "Female" | "Other" | null;
   newcomer: boolean;
+  is_active: boolean | null;
   created_at: string;
 };
+
+type MemberStatusFilter = "all" | "active" | "inactive";
 
 type MemberHistoryRow = {
   id: string;
@@ -19,6 +29,7 @@ type MemberHistoryRow = {
   attended_at: string;
   attendance_context: string | null;
   attendance_group: string | null;
+  service_type: string | null;
   event_id: string | null;
 };
 
@@ -41,8 +52,9 @@ function toCsvValue(input: string) {
 export default function MembersPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<MemberStatusFilter>("all");
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState("Manage member records: search, edit, delete, and export.");
+  const [status, setStatus] = useState("Manage member records: search, edit, activate/deactivate, delete, and export.");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
   const [formAge, setFormAge] = useState("");
@@ -54,6 +66,9 @@ export default function MembersPage() {
   const [historyRows, setHistoryRows] = useState<MemberHistoryRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [eventLookup, setEventLookup] = useState<Record<string, string>>({});
+  const [deleteTarget, setDeleteTarget] = useState<MemberRow | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadMembers = async () => {
     if (!hasSupabaseEnv) {
@@ -65,40 +80,64 @@ export default function MembersPage() {
 
     const result = await supabase
       .from("users")
-      .select("id, student_id, full_name, age, gender, newcomer, created_at")
+      .select("id, student_id, full_name, age, gender, newcomer, is_active, created_at")
       .order("created_at", { ascending: false });
 
-    if (result.error) {
-      if (isMissingColumnError(result.error.message)) {
-        const fallback = await supabase
-          .from("users")
-          .select("id, student_id, full_name, created_at")
-          .order("created_at", { ascending: false });
+    if (!result.error) {
+      setMembers((result.data ?? []) as MemberRow[]);
+      setLoading(false);
+      return;
+    }
 
-        if (fallback.error) {
-          setStatus(`Failed to load members: ${fallback.error.message}`);
-          setLoading(false);
-          return;
-        }
+    if (isMissingActiveColumnError(result.error.message)) {
+      const withoutStatus = await supabase
+        .from("users")
+        .select("id, student_id, full_name, age, gender, newcomer, created_at")
+        .order("created_at", { ascending: false });
 
-        const rows = ((fallback.data ?? []) as Array<Omit<MemberRow, "age" | "gender" | "newcomer">>).map((row) => ({
-          ...row,
-          age: null,
-          gender: null,
-          newcomer: false
-        }));
-        setMembers(rows);
-        setStatus("Users schema is outdated. Run supabase/schema.sql to manage age, gender, and newcomer fields.");
+      if (!withoutStatus.error) {
+        setMembers(
+          ((withoutStatus.data ?? []) as Array<Omit<MemberRow, "is_active">>).map((row) => ({
+            ...row,
+            is_active: null
+          }))
+        );
+        setStatus("Member status column is missing. Run the attendance migration to enable Active/Inactive.");
         setLoading(false);
         return;
       }
 
+      if (!isMissingColumnError(withoutStatus.error.message)) {
+        setStatus(`Failed to load members: ${withoutStatus.error.message}`);
+        setLoading(false);
+        return;
+      }
+    } else if (!isMissingColumnError(result.error.message)) {
       setStatus(`Failed to load members: ${result.error.message}`);
       setLoading(false);
       return;
     }
 
-    setMembers((result.data ?? []) as MemberRow[]);
+    const fallback = await supabase
+      .from("users")
+      .select("id, student_id, full_name, created_at")
+      .order("created_at", { ascending: false });
+
+    if (fallback.error) {
+      setStatus(`Failed to load members: ${fallback.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    const rows = ((fallback.data ?? []) as Array<Omit<MemberRow, "age" | "gender" | "newcomer" | "is_active">>).map((row) => ({
+      ...row,
+      age: null,
+      gender: null,
+      newcomer: false,
+      is_active: null
+    }));
+    setMembers(rows);
+    setStatus("Users schema is outdated. Run supabase/schema.sql to manage age, gender, newcomer, and status fields.");
     setLoading(false);
   };
 
@@ -128,14 +167,33 @@ export default function MembersPage() {
 
   const filteredMembers = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return members;
 
-    return members.filter(
-      (member) =>
+    return members.filter((member) => {
+      const isActive = member.is_active !== false;
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" && isActive) ||
+        (statusFilter === "inactive" && !isActive);
+
+      if (!matchesStatus) return false;
+      if (!needle) return true;
+
+      return (
         member.full_name.toLowerCase().includes(needle) ||
         member.student_id.toLowerCase().includes(needle)
-    );
-  }, [members, query]);
+      );
+    });
+  }, [members, query, statusFilter]);
+
+  const activeCount = useMemo(
+    () => members.filter((member) => member.is_active !== false).length,
+    [members]
+  );
+
+  const inactiveCount = useMemo(
+    () => members.filter((member) => member.is_active === false).length,
+    [members]
+  );
 
   const allFilteredSelected = filteredMembers.length > 0 && filteredMembers.every((m) => selectedIds.includes(m.id));
 
@@ -210,74 +268,73 @@ export default function MembersPage() {
     await loadMembers();
   };
 
-  const deleteByIds = async (ids: string[]) => {
+  const setMembersActive = async (ids: string[], active: boolean) => {
     if (ids.length === 0) return;
 
-    const affectedMembers = members.filter((member) => ids.includes(member.id));
-    const studentIds = affectedMembers.map((member) => member.student_id);
+    setSaving(true);
+    const { error } = await supabase
+      .from("users")
+      .update({ is_active: active })
+      .in("id", ids);
+    setSaving(false);
 
-    if (studentIds.length > 0) {
-      const attendanceDelete = await supabase
-        .from("attendance")
-        .delete()
-        .in("student_id", studentIds);
-
-      if (attendanceDelete.error) {
-        setStatus(`Failed to remove attendance logs: ${attendanceDelete.error.message}`);
+    if (error) {
+      if (isMissingActiveColumnError(error.message)) {
+        setStatus("Member status column is missing. Run the attendance migration to enable Active/Inactive.");
         return;
       }
-    }
 
-    const userDelete = await supabase
-      .from("users")
-      .delete()
-      .in("id", ids);
-
-    if (userDelete.error) {
-      setStatus(`Failed to delete members: ${userDelete.error.message}`);
+      setStatus(`Failed to update member status: ${error.message}`);
       return;
     }
 
-    setStatus(ids.length === 1 ? "Member deleted." : `${ids.length} members deleted.`);
-    setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
-
-    if (editingId && ids.includes(editingId)) {
-      cancelEdit();
-    }
-
-    if (historyMember && ids.includes(historyMember.id)) {
-      setHistoryMember(null);
-      setHistoryRows([]);
-    }
-
-    await loadMembers();
+    setMembers((prev) =>
+      prev.map((member) => (ids.includes(member.id) ? { ...member, is_active: active } : member))
+    );
+    setStatus(
+      ids.length === 1
+        ? active
+          ? "Member set to Active. They can be scanned again."
+          : "Member set to Inactive. Their records and attendance history were kept."
+        : `${ids.length} members set to ${active ? "Active" : "Inactive"}. Attendance history was kept.`
+    );
   };
 
-  const deleteMember = async (member: MemberRow) => {
-    if (!confirm(`Delete ${member.full_name}? This also removes this member's attendance logs.`)) {
-      return;
+  const toggleMemberActive = async (member: MemberRow) => {
+    const isActive = member.is_active !== false;
+
+    if (isActive) {
+      const confirmed = confirm(
+        `Set ${member.full_name} to Inactive? They will not be able to record new attendance. All history will be kept.`
+      );
+      if (!confirmed) return;
     }
 
-    await deleteByIds([member.id]);
+    await setMembersActive([member.id], !isActive);
   };
 
-  const bulkDeleteSelected = async () => {
+  const bulkSetSelectedActive = async (active: boolean) => {
     if (selectedIds.length === 0) return;
-    if (!confirm(`Delete ${selectedIds.length} selected members? This also removes their attendance logs.`)) {
-      return;
+
+    if (!active) {
+      const confirmed = confirm(
+        `Set ${selectedIds.length} selected members to Inactive? They will not be able to record new attendance. All history will be kept.`
+      );
+      if (!confirmed) return;
     }
 
-    await deleteByIds(selectedIds);
+    await setMembersActive(selectedIds, active);
   };
 
   const exportFilteredCsv = () => {
-    const header = ["student_id", "full_name", "age", "gender", "newcomer", "created_at"];
+    const header = ["student_id", "full_name", "age", "gender", "newcomer", "status", "created_at"];
     const rows = filteredMembers.map((member) => [
       member.student_id,
       member.full_name,
       member.age === null ? "" : String(member.age),
       member.gender ?? "",
       member.newcomer ? "true" : "false",
+      member.is_active === false ? "Inactive" : "Active",
       member.created_at
     ]);
 
@@ -289,7 +346,7 @@ export default function MembersPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", `members_export_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute("download", `members_export_${toLocalDateInput(new Date())}.csv`);
     link.click();
     URL.revokeObjectURL(url);
     setStatus(`Exported ${filteredMembers.length} member rows to CSV.`);
@@ -302,10 +359,34 @@ export default function MembersPage() {
 
     const { data, error } = await supabase
       .from("attendance")
-      .select("id, attended_date, attended_at, attendance_context, attendance_group, event_id")
+      .select("id, attended_date, attended_at, attendance_context, attendance_group, service_type, event_id")
       .eq("student_id", member.student_id)
       .order("attended_at", { ascending: false })
       .limit(30);
+
+    if (error && isMissingServiceTypeColumnError(error.message)) {
+      const fallback = await supabase
+        .from("attendance")
+        .select("id, attended_date, attended_at, attendance_context, attendance_group, event_id")
+        .eq("student_id", member.student_id)
+        .order("attended_at", { ascending: false })
+        .limit(30);
+
+      setHistoryLoading(false);
+
+      if (fallback.error) {
+        setStatus(`Failed to load member history: ${fallback.error.message}`);
+        return;
+      }
+
+      setHistoryRows(
+        ((fallback.data ?? []) as MemberHistoryRow[]).map((row) => ({
+          ...row,
+          service_type: normalizeServiceType(row.attendance_context, null, row.attendance_group)
+        }))
+      );
+      return;
+    }
 
     setHistoryLoading(false);
 
@@ -317,11 +398,53 @@ export default function MembersPage() {
     setHistoryRows((data ?? []) as MemberHistoryRow[]);
   };
 
+  const confirmDeleteMember = async () => {
+    if (!deleteTarget) return;
+
+    const target = deleteTarget;
+    setDeleting(true);
+    setDeleteError(null);
+
+    let errorMessage: string | null = null;
+
+    try {
+      const { error } = await supabase.rpc("delete_member", {
+        p_user_id: target.id
+      });
+      if (error) {
+        errorMessage = error.message || "Unknown delete error.";
+      }
+    } catch (err: unknown) {
+      errorMessage = err instanceof Error ? err.message : "Unknown error";
+    } finally {
+      setDeleting(false);
+    }
+
+    if (errorMessage) {
+      const missingFunction = /could not find the function|schema cache/i.test(errorMessage);
+      const message = missingFunction
+        ? "Delete is not available yet. Run supabase/patch_2026_10_28_delete_member.sql in the Supabase SQL Editor."
+        : `Failed to delete member: ${errorMessage}`;
+      setDeleteError(message);
+      setStatus(message);
+      return;
+    }
+
+    setMembers((prev) => prev.filter((member) => member.id !== target.id));
+    setSelectedIds((prev) => prev.filter((id) => id !== target.id));
+    if (editingId === target.id) cancelEdit();
+    if (historyMember?.id === target.id) setHistoryMember(null);
+    setDeleteError(null);
+    setDeleteTarget(null);
+    setStatus(`${target.full_name} was deleted along with their attendance records.`);
+    await loadMembers();
+  };
+
   return (
     <div className="space-y-6 reveal">
       <section>
         <h1 className="page-title font-[var(--font-heading)]">Member Management</h1>
-        <p className="page-subtitle">View, edit, delete, export, and inspect attendance history.</p>
+        <p className="page-subtitle">View, edit, activate or deactivate, delete, export, and inspect attendance history.</p>
       </section>
 
       <section className="analytics-strip">
@@ -330,12 +453,16 @@ export default function MembersPage() {
           <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{members.length}</p>
         </article>
         <article className="analytics-card">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Filtered</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{filteredMembers.length}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Active</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{activeCount}</p>
         </article>
         <article className="analytics-card">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Selected</p>
-          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{selectedIds.length}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Inactive</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{inactiveCount}</p>
+        </article>
+        <article className="analytics-card">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Filtered / Selected</p>
+          <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{filteredMembers.length} / {selectedIds.length}</p>
         </article>
       </section>
 
@@ -359,14 +486,50 @@ export default function MembersPage() {
             </button>
             <button
               type="button"
-              className="rounded-full border border-[#d9b6ba] px-4 py-2 text-sm font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:opacity-50"
-              onClick={() => void bulkDeleteSelected()}
-              disabled={selectedIds.length === 0}
+              className="btn-ghost px-4 py-2 text-sm font-semibold"
+              onClick={() => void bulkSetSelectedActive(true)}
+              disabled={selectedIds.length === 0 || saving}
             >
-              Delete Selected
+              Set Selected Active
+            </button>
+            <button
+              type="button"
+              className="rounded-full border border-[#d9b6ba] px-4 py-2 text-sm font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:opacity-50"
+              onClick={() => void bulkSetSelectedActive(false)}
+              disabled={selectedIds.length === 0 || saving}
+            >
+              Set Selected Inactive
             </button>
           </div>
         </div>
+
+        <div className="mt-4">
+          <p className="field-label">Filter By Status</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setStatusFilter("all")}
+              className={statusFilter === "all" ? "btn-primary" : "btn-ghost"}
+            >
+              All Members
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("active")}
+              className={statusFilter === "active" ? "btn-primary" : "btn-ghost"}
+            >
+              Active
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("inactive")}
+              className={statusFilter === "inactive" ? "btn-primary" : "btn-ghost"}
+            >
+              Inactive
+            </button>
+          </div>
+        </div>
+
         <div className="status-info mt-4">{loading ? "Loading members..." : status}</div>
       </div>
 
@@ -418,8 +581,16 @@ export default function MembersPage() {
                 <div key={row.id} className="rounded-xl border border-[#c7d5cf] bg-white/85 px-3 py-2 text-sm text-[#2f4d43]">
                   <p className="font-semibold">{row.attended_date} • {new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
                   <p className="text-xs text-[#5e766c]">
-                    {row.attendance_context ?? "-"} • {row.attendance_group ?? "-"}
-                    {row.event_id ? ` • ${eventLookup[row.event_id] ?? "Linked Event"}` : ""}
+                    {(() => {
+                      const type = normalizeAttendanceType(row.attendance_context, row.attendance_group);
+                      const session = normalizeServiceType(
+                        type,
+                        row.service_type,
+                        row.attendance_group
+                      );
+                      return `${type ?? "Unknown"}${session ? ` • ${session}` : ""}`;
+                    })()}
+                    {row.event_id ? ` • ${eventLookup[row.event_id] ?? "Linked Event"}` : " • No event"}
                   </p>
                 </div>
               ))
@@ -443,6 +614,7 @@ export default function MembersPage() {
                 <th className="px-3 py-2 font-semibold">Age</th>
                 <th className="px-3 py-2 font-semibold">Gender</th>
                 <th className="px-3 py-2 font-semibold">Newcomer</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
                 <th className="px-3 py-2 font-semibold">Actions</th>
               </tr>
             </thead>
@@ -457,14 +629,41 @@ export default function MembersPage() {
                   <td className="px-3 py-2.5">{member.age ?? "-"}</td>
                   <td className="px-3 py-2.5">{member.gender ?? "-"}</td>
                   <td className="px-3 py-2.5">{member.newcomer ? "Yes" : "No"}</td>
+                  <td className="px-3 py-2.5">
+                    <span
+                      className={
+                        member.is_active === false
+                          ? "rounded-full border border-[#d9b6ba] bg-[#fff3f4] px-2.5 py-1 text-xs font-semibold text-[#8a3f46]"
+                          : "rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-2.5 py-1 text-xs font-semibold text-[#245142]"
+                      }
+                    >
+                      {member.is_active === false ? "Inactive" : "Active"}
+                    </span>
+                  </td>
                   <td className="rounded-r-xl px-3 py-2.5">
                     <div className="flex flex-wrap gap-2">
                       <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={() => startEdit(member)}>Edit</button>
                       <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={() => void openHistory(member)}>History</button>
                       <button
                         type="button"
-                        className="rounded-full border border-[#d9b6ba] px-3 py-1.5 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]"
-                        onClick={() => void deleteMember(member)}
+                        className={
+                          member.is_active === false
+                            ? "rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-3 py-1.5 text-xs font-semibold text-[#245142] transition hover:bg-[#dcefe6]"
+                            : "rounded-full border border-[#d9b6ba] px-3 py-1.5 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]"
+                        }
+                        onClick={() => void toggleMemberActive(member)}
+                        disabled={saving}
+                      >
+                        {member.is_active === false ? "Set Active" : "Set Inactive"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-full border border-[#c9a6aa] px-3 py-1.5 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:opacity-50"
+                        onClick={() => {
+                          setDeleteError(null);
+                          setDeleteTarget(member);
+                        }}
+                        disabled={saving || deleting}
                       >
                         Delete
                       </button>
@@ -476,6 +675,50 @@ export default function MembersPage() {
           </table>
         )}
       </section>
+
+      {deleteTarget ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1b2a25]/45 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-member-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[#d8c3c5] bg-[#fbf7f2] p-5 shadow-2xl">
+            <h2 id="delete-member-title" className="font-[var(--font-heading)] text-xl text-[#3a282a]">
+              Delete Member?
+            </h2>
+            <p className="mt-3 text-sm text-[#5b4547]">
+              This permanently deletes <span className="font-semibold">{deleteTarget.full_name}</span> ({deleteTarget.student_id}) and all of their attendance records. This cannot be undone.
+            </p>
+            {deleteError ? (
+              <p className="mt-3 rounded-xl border border-[#e2b9bb] bg-[#f8eded] px-3 py-2 text-sm text-[#7a3237]">
+                {deleteError}
+              </p>
+            ) : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  setDeleteError(null);
+                  setDeleteTarget(null);
+                }}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-full bg-[#8a3f46] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#73343a] disabled:opacity-50"
+                onClick={() => void confirmDeleteMember()}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting..." : "Delete Member"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
