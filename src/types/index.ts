@@ -44,6 +44,9 @@ export type EventSuggestion = {
   suggestion_text: string;
   main_question?: string | null;
   suggestion_question_text?: string | null;
+  poll_name?: string | null;
+  poll_starts_at?: string | null;
+  poll_ends_at?: string | null;
   created_at: string;
   poll_key?: string | null;
   item_kind?: "question" | "choice" | null;

@@ -232,8 +232,9 @@ begin
   end if;
 end $$;
 
--- Attendance writes: normalise type/session, block inactive members, duplicate
--- Sunday rows, and incompatible linked events.
+-- Attendance writes: normalise type/session, verify the member exists, block
+-- duplicate Sunday rows, and reject incompatible linked events. Inactive
+-- members may still be recorded; attendance never changes account status.
 create or replace function public.attendance_guard()
 returns trigger
 language plpgsql
@@ -241,7 +242,6 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_active boolean;
   v_event_type text;
   v_event_found boolean;
   v_conflict integer;
@@ -272,16 +272,12 @@ begin
   end if;
 
   if tg_op = 'INSERT' then
-    select is_active into v_active
-    from public.users
-    where student_id = new.student_id;
-
-    if not found then
+    if not exists (
+      select 1
+      from public.users
+      where student_id = new.student_id
+    ) then
       raise exception 'MEMBER_NOT_FOUND' using errcode = '23503';
-    end if;
-
-    if v_active is false then
-      raise exception 'MEMBER_INACTIVE' using errcode = '23514';
     end if;
   end if;
 

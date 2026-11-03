@@ -58,6 +58,14 @@ function normalizeAttendanceGroup(label: string | null): AttendanceGroup | null 
   return label as AttendanceGroup;
 }
 
+function isLinkedEventFilterType(filter: AttendanceTypeFilter) {
+  return (
+    filter === "Rooftop" ||
+    filter === "Women's Network" ||
+    filter === "Men's Network"
+  );
+}
+
 function isMissingClassificationColumnError(message: string) {
   return /column\s+attendance\.(was_newcomer|attendance_context|attendance_group|event_id)\s+does not exist/i.test(message);
 }
@@ -320,6 +328,7 @@ export default function AttendanceRecordsPage() {
 
   const handleAttendanceTypeChange = useCallback((filter: AttendanceTypeFilter) => {
     setAttendanceTypeFilter(filter);
+    setSelectedLinkedEventId(null);
   }, []);
 
   const filteredLogs = useMemo(() => {
@@ -333,7 +342,9 @@ export default function AttendanceRecordsPage() {
         normalizeAttendanceType(log.attendance_context, log.attendance_group) === attendanceTypeFilter;
 
       const matchesLinkedEvent =
-        !selectedLinkedEventId || log.event_id === selectedLinkedEventId;
+        !isLinkedEventFilterType(attendanceTypeFilter) ||
+        !selectedLinkedEventId ||
+        log.event_id === selectedLinkedEventId;
 
       const matchesSearch =
         normalizedSearch.length === 0 ||
@@ -345,7 +356,9 @@ export default function AttendanceRecordsPage() {
   }, [attendanceTypeFilter, logs, normalizedSearch, selectedLinkedEventId, selectedNetworkSet, userNetworkMap]);
 
   const hasNoRecordsForSelectedLinkedEvent =
-    Boolean(selectedLinkedEventId) && filteredLogs.length === 0;
+    isLinkedEventFilterType(attendanceTypeFilter) &&
+    Boolean(selectedLinkedEventId) &&
+    filteredLogs.length === 0;
 
   useEffect(() => {
     setPage(1);
@@ -654,7 +667,7 @@ export default function AttendanceRecordsPage() {
             <button
               key={type}
               type="button"
-              onClick={() => setAttendanceTypeFilter(type)}
+              onClick={() => handleAttendanceTypeChange(type)}
               className={attendanceTypeFilter === type ? "btn-primary" : "btn-ghost"}
             >
               {type}
@@ -662,32 +675,34 @@ export default function AttendanceRecordsPage() {
           ))}
         </div>
 
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="w-full sm:max-w-sm">
-            <label className="field-label" htmlFor="linked-event-filter">
-              Filter By Linked Event
-            </label>
-            <select
-              id="linked-event-filter"
-              className="field-input"
-              value={selectedLinkedEventId ?? ""}
-              onChange={(event) => setSelectedLinkedEventId(event.target.value || null)}
-              disabled={linkedEventOptions.length === 0}
-            >
-              <option value="">All Linked Events</option>
-              {linkedEventOptions.map((event) => (
-                <option key={event.id} value={event.id}>
-                  {event.label}
-                </option>
-              ))}
-            </select>
+        {isLinkedEventFilterType(attendanceTypeFilter) ? (
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-full sm:max-w-sm">
+              <label className="field-label" htmlFor="linked-event-filter">
+                Filter By Linked Event
+              </label>
+              <select
+                id="linked-event-filter"
+                className="field-input"
+                value={selectedLinkedEventId ?? ""}
+                onChange={(event) => setSelectedLinkedEventId(event.target.value || null)}
+                disabled={linkedEventOptions.length === 0}
+              >
+                <option value="">All Linked Events</option>
+                {linkedEventOptions.map((event) => (
+                  <option key={event.id} value={event.id}>
+                    {event.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {selectedLinkedEventId ? (
+              <button type="button" onClick={() => setSelectedLinkedEventId(null)} className="btn-ghost">
+                Clear Event
+              </button>
+            ) : null}
           </div>
-          {selectedLinkedEventId ? (
-            <button type="button" onClick={() => setSelectedLinkedEventId(null)} className="btn-ghost">
-              Clear Event
-            </button>
-          ) : null}
-        </div>
+        ) : null}
 
         <div>
           <label className="field-label" htmlFor="record-search">

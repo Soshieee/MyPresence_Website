@@ -8,10 +8,15 @@ import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import {
   createPollChoice,
   createPollDraft,
+  dateTimeLocalToIso,
+  formatPollDateTime,
+  getPollEffectiveStatus,
   isPollStatus,
   isUuid,
+  isoToDateTimeLocal,
   parsePollSuggestion,
-  pollStatusLabel,
+  PollEffectiveStatus,
+  pollEffectiveStatusLabel,
   validatePollDraft
 } from "@/lib/polls";
 import {
@@ -53,8 +58,11 @@ type SavedPollChoice = {
 
 type SavedPoll = {
   key: string;
+  name: string;
   mainQuestion: string;
   question: string;
+  startsAt: string | null;
+  endsAt: string | null;
   createdAt: string;
   status: PollStatus;
   choices: SavedPollChoice[];
@@ -65,10 +73,13 @@ type PollDraftEditorProps = {
   draft: ReturnType<typeof createPollDraft>;
   onChange: (draft: ReturnType<typeof createPollDraft>) => void;
   onRemove: () => void;
+  scheduleReady: boolean;
   removeLabel?: string;
 };
 
 const SUGGESTION_COLUMNS =
+  "id,event_id,suggestion_text,main_question,suggestion_question_text,poll_name,poll_starts_at,poll_ends_at,created_at,poll_key,item_kind,poll_status,archived_at,sort_order,updated_at";
+const SUGGESTION_COLUMNS_WITHOUT_SCHEDULE =
   "id,event_id,suggestion_text,main_question,suggestion_question_text,created_at,poll_key,item_kind,poll_status,archived_at,sort_order,updated_at";
 const SUGGESTION_FALLBACK_COLUMNS = "id,event_id,suggestion_text,created_at";
 const SUBMISSION_COLUMNS = "event_id,poll_id,question_id,voter_key,created_at,updated_at";
@@ -168,8 +179,11 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
     const key = rowPollKey(row);
     const poll = polls.get(key) ?? {
       key,
+      name: "",
       mainQuestion: "",
       question: "",
+      startsAt: null,
+      endsAt: null,
       createdAt: row.created_at,
       status: "open" as PollStatus,
       choices: [],
@@ -180,9 +194,22 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
       poll.createdAt = row.created_at;
     }
 
+    const pollName = row.poll_name?.trim() ?? "";
     const mainQuestionText = row.main_question?.trim() ?? "";
     const questionText = row.suggestion_question_text?.trim() ?? "";
     const rowStatus = isPollStatus(row.poll_status) ? row.poll_status : null;
+
+    if (pollName && !poll.name) {
+      poll.name = pollName;
+    }
+
+    if (row.poll_starts_at && !poll.startsAt) {
+      poll.startsAt = row.poll_starts_at;
+    }
+
+    if (row.poll_ends_at && !poll.endsAt) {
+      poll.endsAt = row.poll_ends_at;
+    }
 
     if (mainQuestionText && !poll.mainQuestion) {
       poll.mainQuestion = mainQuestionText;
@@ -223,8 +250,9 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-function statusBadgeClass(status: PollStatus) {
-  if (status === "closed") return "border-[#d8c58e] bg-[#fff8df] text-[#6f5a18]";
+function statusBadgeClass(status: PollEffectiveStatus) {
+  if (status === "scheduled") return "border-[#b7c5e8] bg-[#eef3ff] text-[#40548f]";
+  if (status === "ended") return "border-[#d8c58e] bg-[#fff8df] text-[#6f5a18]";
   if (status === "archived") return "border-[#c6c9c7] bg-[#f1f3f2] text-[#58635f]";
   return "border-[#9fc6b7] bg-[#e7f4ee] text-[#245142]";
 }
@@ -233,6 +261,7 @@ function PollDraftEditor({
   draft,
   onChange,
   onRemove,
+  scheduleReady,
   removeLabel = "Remove poll"
 }: PollDraftEditorProps) {
   const updateChoice = (choiceKey: string, text: string) => {
@@ -248,23 +277,40 @@ function PollDraftEditor({
     <section className="border-l-4 border-[#4285f4] bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
-          <label className="field-label" htmlFor={`poll-main-question-${draft.key}`}>
-            Main question / description
+          <label className="field-label" htmlFor={`poll-name-${draft.key}`}>
+            Poll name
           </label>
-          <textarea
-            id={`poll-main-question-${draft.key}`}
-            className="field-input min-h-20 rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
-            value={draft.mainQuestion}
-            onChange={(event) => onChange({ ...draft, mainQuestion: event.target.value })}
-            placeholder="What would you like to ask the members?"
+          <input
+            id={`poll-name-${draft.key}`}
+            className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+            value={draft.name}
+            onChange={(event) => onChange({ ...draft, name: event.target.value })}
+            placeholder="e.g. Sunday lunch preference"
+            disabled={!scheduleReady}
           />
           <p className="mt-1 text-xs text-[#5e766c]">
-            Shown first in the app. If left blank, the app uses the event details shown above the polls.
+            Optional label used to identify this poll in the management list.
           </p>
         </div>
         <button type="button" className="btn-ghost px-3 py-1 text-xs" onClick={onRemove}>
           {removeLabel}
         </button>
+      </div>
+
+      <div className="mt-3">
+        <label className="field-label" htmlFor={`poll-main-question-${draft.key}`}>
+          Main question / description
+        </label>
+        <textarea
+          id={`poll-main-question-${draft.key}`}
+          className="field-input min-h-20 rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+          value={draft.mainQuestion}
+          onChange={(event) => onChange({ ...draft, mainQuestion: event.target.value })}
+          placeholder="What would you like to ask the members?"
+        />
+        <p className="mt-1 text-xs text-[#5e766c]">
+          Shown first in the app. If left blank, the app uses the event details shown above the polls.
+        </p>
       </div>
 
       <div className="mt-3">
@@ -279,6 +325,45 @@ function PollDraftEditor({
           placeholder="Which option would you prefer?"
         />
       </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="field-label" htmlFor={`poll-starts-${draft.key}`}>
+            Starts at (optional)
+          </label>
+          <input
+            id={`poll-starts-${draft.key}`}
+            className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+            type="datetime-local"
+            value={draft.startsAt}
+            onChange={(event) => onChange({ ...draft, startsAt: event.target.value })}
+            disabled={!scheduleReady}
+          />
+        </div>
+        <div>
+          <label className="field-label" htmlFor={`poll-ends-${draft.key}`}>
+            Ends at (optional)
+          </label>
+          <input
+            id={`poll-ends-${draft.key}`}
+            className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
+            type="datetime-local"
+            value={draft.endsAt}
+            onChange={(event) => onChange({ ...draft, endsAt: event.target.value })}
+            disabled={!scheduleReady}
+          />
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-[#5e766c]">
+        Times use this device&apos;s local timezone. Leave the start blank to open the poll immediately. Leave the end
+        blank to keep it open until you close it manually.
+      </p>
+      {!scheduleReady ? (
+        <p className="mt-2 rounded-lg border border-[#e3c98f] bg-[#fdf6e6] px-3 py-2 text-xs font-semibold text-[#7a5a17]">
+          Poll names and schedules need supabase/patch_2026_11_02_poll_name_schedule.sql. Existing poll editing still
+          works without them.
+        </p>
+      ) : null}
 
       <p className="mt-4 text-xs font-semibold uppercase text-[#5f6368]">Options</p>
       <div className="mt-2 space-y-2">
@@ -322,6 +407,7 @@ function PollDraftEditor({
 
 function PollResultCard({
   poll,
+  now,
   counts,
   total,
   memberCount,
@@ -331,6 +417,7 @@ function PollResultCard({
   onDelete
 }: {
   poll: SavedPoll;
+  now: Date;
   counts: Map<string, number>;
   total: number;
   memberCount: number;
@@ -339,6 +426,9 @@ function PollResultCard({
   onStatusChange: (status: PollStatus) => void;
   onDelete: () => void;
 }) {
+  const effectiveStatus = getPollEffectiveStatus(poll, now);
+  const startsAtLabel = formatPollDateTime(poll.startsAt);
+  const endsAtLabel = formatPollDateTime(poll.endsAt);
   const activeChoices = poll.choices.filter((choice) => !choice.archivedAt);
   const archivedChoices = poll.choices.filter((choice) => choice.archivedAt);
   const archivedChoicesWithVotes = archivedChoices.filter(
@@ -366,13 +456,21 @@ function PollResultCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusBadgeClass(poll.status)}`}>
-              {pollStatusLabel(poll.status)}
+            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusBadgeClass(effectiveStatus)}`}>
+              {pollEffectiveStatusLabel(effectiveStatus)}
             </span>
             <span className="text-xs font-semibold text-[#5f6f68]">
               {total} {total === 1 ? "vote" : "votes"}
             </span>
           </div>
+          <p className="mt-2 font-[var(--font-heading)] text-lg text-[#243730]">
+            {poll.name || "Untitled poll"}
+          </p>
+          <p className="mt-1 text-xs text-[#5e766c]">
+            {startsAtLabel ? `Starts ${startsAtLabel}` : "Starts immediately"}
+            {" • "}
+            {endsAtLabel ? `Ends ${endsAtLabel}` : "No end time"}
+          </p>
           <div className="mt-2 space-y-2">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">Main question</p>
@@ -466,6 +564,8 @@ export default function EventsManagerPage() {
   const [submissions, setSubmissions] = useState<EventPollSubmission[]>([]);
   const [memberCounts, setMemberCounts] = useState<MemberCounts | null>(null);
   const [pollSchemaReady, setPollSchemaReady] = useState(true);
+  const [pollScheduleReady, setPollScheduleReady] = useState(true);
+  const [now, setNow] = useState(() => new Date());
   const [submissionSchemaReady, setSubmissionSchemaReady] = useState(true);
   const [status, setStatus] = useState("Manage events and publish them to the home page.");
   const [loading, setLoading] = useState(false);
@@ -613,37 +713,59 @@ export default function EventsManagerPage() {
       .select(SUGGESTION_COLUMNS)
       .order("created_at", { ascending: true });
 
-    if (error) {
-      if (isMissingColumnError(error.message)) {
-        setPollSchemaReady(false);
-        const fallback = await supabase
-          .from("event_suggestions")
-          .select(SUGGESTION_FALLBACK_COLUMNS)
-          .order("created_at", { ascending: true });
+    if (!error) {
+      setPollSchemaReady(true);
+      setPollScheduleReady(true);
+      setEventSuggestions((data ?? []) as EventSuggestion[]);
+      return;
+    }
 
-        if (fallback.error) {
-          setSuggestionStatus(`Failed to load suggestions: ${fallback.error.message}`);
-          return;
-        }
+    if (isMissingEventSuggestionsTableError(error.message)) {
+      setSuggestionStatus("Event suggestions table is missing. Run supabase/schema.sql to enable suggestions.");
+      return;
+    }
 
-        setEventSuggestions((fallback.data ?? []) as EventSuggestion[]);
-        setSuggestionStatus(
-          "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql in Supabase SQL Editor."
-        );
-        return;
-      }
-
-      if (isMissingEventSuggestionsTableError(error.message)) {
-        setSuggestionStatus("Event suggestions table is missing. Run supabase/schema.sql to enable suggestions.");
-        return;
-      }
-
+    if (!isMissingColumnError(error.message)) {
       setSuggestionStatus(`Failed to load suggestions: ${error.message}`);
       return;
     }
 
-    setPollSchemaReady(true);
-    setEventSuggestions((data ?? []) as EventSuggestion[]);
+    const withoutSchedule = await supabase
+      .from("event_suggestions")
+      .select(SUGGESTION_COLUMNS_WITHOUT_SCHEDULE)
+      .order("created_at", { ascending: true });
+
+    if (!withoutSchedule.error) {
+      setPollSchemaReady(true);
+      setPollScheduleReady(false);
+      setEventSuggestions((withoutSchedule.data ?? []) as EventSuggestion[]);
+      setSuggestionStatus(
+        "Poll naming and scheduling are not enabled yet. Run supabase/patch_2026_11_02_poll_name_schedule.sql in the Supabase SQL Editor."
+      );
+      return;
+    }
+
+    if (!isMissingColumnError(withoutSchedule.error.message)) {
+      setSuggestionStatus(`Failed to load suggestions: ${withoutSchedule.error.message}`);
+      return;
+    }
+
+    setPollSchemaReady(false);
+    setPollScheduleReady(false);
+    const fallback = await supabase
+      .from("event_suggestions")
+      .select(SUGGESTION_FALLBACK_COLUMNS)
+      .order("created_at", { ascending: true });
+
+    if (fallback.error) {
+      setSuggestionStatus(`Failed to load suggestions: ${fallback.error.message}`);
+      return;
+    }
+
+    setEventSuggestions((fallback.data ?? []) as EventSuggestion[]);
+    setSuggestionStatus(
+      "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql in Supabase SQL Editor."
+    );
   }, []);
 
   const loadSubmissions = useCallback(async (eventId: string) => {
@@ -807,6 +929,11 @@ export default function EventsManagerPage() {
     };
   }, [calendarPreviewUrl]);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setNow(new Date()), 30000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
   const addSuggestion = async (eventId: string, rawValue: string) => {
     const next = rawValue.trim();
     if (!next) return;
@@ -874,6 +1001,13 @@ export default function EventsManagerPage() {
     const pollAlreadyExists = eventSuggestions.some(
       (row) => row.event_id === eventId && rowPollKey(row) === draft.key
     );
+    const schedulePayload = pollScheduleReady
+      ? {
+          poll_name: draft.name.trim() || null,
+          poll_starts_at: dateTimeLocalToIso(draft.startsAt),
+          poll_ends_at: dateTimeLocalToIso(draft.endsAt)
+        }
+      : {};
 
     const fail = async (message: string) => {
       setSuggestionStatus(message);
@@ -887,6 +1021,7 @@ export default function EventsManagerPage() {
         suggestion_text: choice.text,
         main_question: mainQuestion || null,
         suggestion_question_text: question,
+        ...schedulePayload,
         poll_key: pollKey,
         item_kind: "choice",
         poll_status: draft.status,
@@ -895,16 +1030,13 @@ export default function EventsManagerPage() {
         updated_at: now
       }));
 
-      const { data, error } = await supabase
-        .from("event_suggestions")
-        .insert(rows)
-        .select(SUGGESTION_COLUMNS);
+      const { error } = await supabase.from("event_suggestions").insert(rows);
 
       if (error) {
         return fail(`Failed to save poll: ${error.message}`);
       }
 
-      setEventSuggestions((previous) => [...previous, ...((data ?? []) as EventSuggestion[])]);
+      await loadSuggestions();
       setSuggestionStatus("Poll saved.");
       return true;
     }
@@ -923,6 +1055,7 @@ export default function EventsManagerPage() {
         suggestion_text: choice.text,
         main_question: mainQuestion || null,
         suggestion_question_text: question,
+        ...schedulePayload,
         poll_key: pollKey,
         item_kind: "choice",
         poll_status: draft.status,
@@ -987,7 +1120,14 @@ export default function EventsManagerPage() {
     if (rowIdsToArchive.length > 0) {
       const archiveResult = await supabase
         .from("event_suggestions")
-        .update({ archived_at: now, updated_at: now })
+        .update({
+          main_question: mainQuestion || null,
+          suggestion_question_text: question,
+          ...schedulePayload,
+          poll_status: draft.status,
+          archived_at: now,
+          updated_at: now
+        })
         .in("id", rowIdsToArchive);
 
       if (archiveResult.error) {
@@ -999,6 +1139,21 @@ export default function EventsManagerPage() {
     for (const questionRow of legacyQuestionRows) {
       const hasVotes = submissions.some((submission) => submission.question_id === questionRow.id);
       if (hasVotes) {
+        const questionUpdate = await supabase
+          .from("event_suggestions")
+          .update({
+            main_question: mainQuestion || null,
+            suggestion_question_text: question,
+            ...schedulePayload,
+            poll_status: draft.status,
+            updated_at: now
+          })
+          .eq("id", questionRow.id);
+
+        if (questionUpdate.error) {
+          return fail(`Failed to update the old poll question row: ${questionUpdate.error.message}`);
+        }
+
         keptLegacyQuestion = true;
         continue;
       }
@@ -1051,7 +1206,7 @@ export default function EventsManagerPage() {
     await loadSuggestions();
     setSuggestionStatus(
       nextStatus === "open"
-        ? "Poll reopened."
+        ? "Poll reopened. Its schedule and end time still determine when voting is available."
         : nextStatus === "closed"
           ? "Poll closed."
           : "Poll archived."
@@ -1059,7 +1214,8 @@ export default function EventsManagerPage() {
   };
 
   const deletePoll = async (poll: SavedPoll) => {
-    if (!window.confirm(`Delete "${poll.question}" and all of its votes? This cannot be undone.`)) {
+    const pollLabel = poll.name || poll.question;
+    if (!window.confirm(`Delete "${pollLabel}" and all of its votes? This cannot be undone.`)) {
       return;
     }
 
@@ -1113,8 +1269,11 @@ export default function EventsManagerPage() {
   const startEditingPoll = (poll: SavedPoll) => {
     setEditingPoll({
       key: poll.key,
+      name: poll.name,
       mainQuestion: poll.mainQuestion,
       question: poll.question,
+      startsAt: isoToDateTimeLocal(poll.startsAt),
+      endsAt: isoToDateTimeLocal(poll.endsAt),
       status: poll.status,
       choices: poll.choices
         .filter((choice) => !choice.archivedAt)
@@ -1591,7 +1750,8 @@ export default function EventsManagerPage() {
                 </button>
               </div>
               <p className="text-xs text-[#5e766c]">
-                The main question, poll question, and options are stored separately. App users vote once per open poll.
+                Give each poll a name, optionally schedule when voting opens and closes, and add its question and
+                options. App users vote once per active poll.
               </p>
               {newEventPolls.map((poll, pollIndex) => (
                 <PollDraftEditor
@@ -1605,6 +1765,7 @@ export default function EventsManagerPage() {
                   onRemove={() =>
                     setNewEventPolls((previous) => previous.filter((item) => item.key !== poll.key))
                   }
+                  scheduleReady={pollScheduleReady}
                 />
               ))}
             </div>
@@ -1864,7 +2025,8 @@ export default function EventsManagerPage() {
                 <div>
                   <h3 className="font-[var(--font-heading)] text-lg text-[#23332d]">Polls</h3>
                   <p className="mt-1 text-xs text-[#5e766c]">
-                    Results are read-only here. App users can submit one vote per poll while it is open.
+                    Poll status follows the schedule: Scheduled, Active, or Ended. App users can submit one vote per
+                    poll while it is active.
                   </p>
                 </div>
                 <button
@@ -1882,6 +2044,13 @@ export default function EventsManagerPage() {
                   Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql in the Supabase SQL Editor.
                 </p>
               ) : null}
+              {pollSchemaReady && !pollScheduleReady ? (
+                <p className="status-info">
+                  Poll naming and scheduling are not enabled yet. Run
+                  supabase/patch_2026_11_02_poll_name_schedule.sql to add names, start times, and end times. Existing
+                  poll editing still works.
+                </p>
+              ) : null}
               {submissionStatus ? <p className="status-info">{submissionStatus}</p> : null}
 
               {activePolls.length === 0 ? (
@@ -1893,6 +2062,7 @@ export default function EventsManagerPage() {
                   <PollResultCard
                     key={poll.key}
                     poll={poll}
+                    now={now}
                     counts={voteSummary.counts}
                     total={pollVoteTotal(poll)}
                     memberCount={memberDenominator.count}
@@ -1920,6 +2090,7 @@ export default function EventsManagerPage() {
                         <PollResultCard
                           key={poll.key}
                           poll={poll}
+                          now={now}
                           counts={voteSummary.counts}
                           total={pollVoteTotal(poll)}
                           memberCount={memberDenominator.count}
@@ -1949,6 +2120,7 @@ export default function EventsManagerPage() {
                     draft={editingPoll}
                     onChange={setEditingPoll}
                     onRemove={() => setEditingPoll(null)}
+                    scheduleReady={pollScheduleReady}
                     removeLabel="Cancel"
                   />
                   <button type="submit" className="btn-primary">Save changes</button>
@@ -1983,6 +2155,7 @@ export default function EventsManagerPage() {
                       onRemove={() =>
                         setAdditionalPolls((previous) => previous.filter((item) => item.key !== poll.key))
                       }
+                      scheduleReady={pollScheduleReady}
                     />
                   ))}
                   <button type="submit" className="btn-primary">Save polls</button>

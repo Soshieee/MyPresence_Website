@@ -1,6 +1,6 @@
 # App contract: polls and calendar
 
-This document is the integration contract for the mobile app. The web app manages polls and calendar images; the app reads open polls, submits votes, and displays the current calendar image.
+This document is the integration contract for the mobile app. The web app manages polls and calendar images; the app reads active polls, submits votes, and displays the current calendar image.
 
 ## 1. Database tables
 
@@ -14,9 +14,12 @@ Every poll is stored as one row per choice. There is no separate question row.
 | `event_id` | Event the poll belongs to. |
 | `suggestion_text` | The clean choice label, for example `ya` or `na`. Do not show encoded prefixes. |
 | `suggestion_question_text` | The poll question, repeated on every choice row for that poll. Show this above the choices. |
+| `poll_name` | Optional administrator-facing poll name, repeated on every choice row for that poll. |
 | `poll_key` | Groups the choice rows that belong to the same poll. |
 | `item_kind` | Always `choice` for poll rows. |
-| `poll_status` | `open`, `closed`, or `archived` on every choice row in the poll. |
+| `poll_status` | Stored state: `open`, `closed`, or `archived` on every choice row in the poll. |
+| `poll_starts_at` | Optional `timestamptz` when voting opens. `null` means available immediately. |
+| `poll_ends_at` | Optional `timestamptz` when voting closes. `null` means no automatic end time. |
 | `archived_at` | Set when one individual choice was removed. A poll that is closed or archived uses `poll_status`, not this column. |
 | `sort_order` | Choice display order. |
 | `created_at` | When the choice row was created. |
@@ -28,7 +31,7 @@ Read the choices for an event:
 const { data: rows, error } = await supabase
   .from("event_suggestions")
   .select(
-    "id,event_id,suggestion_text,suggestion_question_text,poll_key,item_kind,poll_status,archived_at,sort_order"
+    "id,event_id,suggestion_text,suggestion_question_text,poll_name,poll_key,item_kind,poll_status,poll_starts_at,poll_ends_at,archived_at,sort_order"
   )
   .eq("event_id", eventId)
   .eq("item_kind", "choice")
@@ -36,7 +39,28 @@ const { data: rows, error } = await supabase
   .order("sort_order", { ascending: true });
 ```
 
-Group the rows by `poll_key`. Every row in a group has the same `suggestion_question_text`. Show a poll only when `poll_status = "open"`. Use `suggestion_question_text` as the heading (for example, in place of the generic “Choose your preferred suggestion” label) and `suggestion_text` as each radio option.
+Group the rows by `poll_key`. Every row in a group has the same `suggestion_question_text`, `poll_name`, and schedule. Use `suggestion_question_text` as the poll heading (for example, in place of the generic “Choose your preferred suggestion” label) and `suggestion_text` as each radio option. `poll_name` is an optional management label; it can also be shown as a secondary heading.
+
+### Poll status
+
+Do not use `poll_status` alone to decide whether voting is available. Derive the effective status from the stored status and schedule:
+
+| Effective status | Condition |
+| --- | --- |
+| `archived` | `poll_status = "archived"` |
+| `ended` | `poll_status = "closed"`, or `poll_ends_at` is set and `poll_ends_at <= now()` |
+| `scheduled` | `poll_starts_at` is set and `now() < poll_starts_at` |
+| `active` | None of the above |
+
+The web app also exposes the same logic as the SQL function
+`public.poll_effective_status(poll_status, poll_starts_at, poll_ends_at)`.
+
+- `scheduled`: show the poll as upcoming (and its start time); disable voting.
+- `active`: allow voting.
+- `ended`: keep the results visible; disable voting.
+- `archived`: hide the poll from the normal list, but keep results available to administrators.
+
+All schedule values are `timestamptz`. Parse them as UTC and compare them with the current UTC time. Send `timestamptz` values in ISO 8601 form when updating data from the app.
 
 ### `EventPoll_Submissions`
 
@@ -63,7 +87,17 @@ await supabase.from("EventPoll_Submissions").insert({
 });
 ```
 
-The trigger looks up the selected choice, sets `question_id` to its `poll_key`, and fills `voter_key` from `auth.uid()` when the app omits it.
+The trigger looks up the selected choice, sets `question_id` to its `poll_key`, and fills `voter_key` from `auth.uid()` when the app omits it. It also rejects votes outside the poll's schedule, even if the app has stale poll data:
+
+| Database error | Meaning |
+| --- | --- |
+| `POLL_NOT_STARTED` | The poll's `poll_starts_at` is still in the future. |
+| `POLL_ENDED` | The poll's `poll_ends_at` has passed, or `poll_status = "closed"`. |
+| `POLL_ARCHIVED` | `poll_status = "archived"`. |
+| `POLL_CHOICE_ARCHIVED` | The selected choice has an `archived_at` value. |
+| `POLL_NOT_FOUND` / `POLL_CHOICE_NOT_FOUND` | The poll key or selected choice no longer exists. |
+
+Treat these as expected validation failures, show a friendly message, and refresh the poll list. Do not retry the same vote.
 
 If the app wants to perform an upsert, send the poll key explicitly:
 
@@ -111,7 +145,7 @@ for (const vote of votes ?? []) {
 const total = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
 ```
 
-Use the choices' `poll_status` to decide whether voting is still allowed. Results can remain visible after the poll is closed or archived.
+Use the effective status described above to decide whether voting is still allowed. Results can remain visible after a poll is ended, closed, or archived.
 
 ## 4. Calendar image
 
@@ -150,7 +184,7 @@ The poll patches do **not** replace existing RLS policies on `event_suggestions`
 
 ## 6. What the app needs from the web team
 
-- `supabase/patch_2026_10_22_polls_calendar.sql` and `supabase/patch_2026_10_23_poll_question_text.sql` applied.
+- `supabase/patch_2026_10_22_polls_calendar.sql`, `supabase/patch_2026_10_23_poll_question_text.sql`, `supabase/patch_2026_10_24_poll_main_question.sql`, and `supabase/patch_2026_11_02_poll_name_schedule.sql` applied.
 - The Supabase URL and anon key (never the service-role key).
 - The app user identity source (Supabase Auth id or device UUID).
 - A test event with one open poll and one calendar image.

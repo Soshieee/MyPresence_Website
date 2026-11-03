@@ -117,7 +117,8 @@ export type AttendanceDbErrorKind = "duplicate" | "inactive" | "event" | "invali
 
 export const ATTENDANCE_ERROR_MESSAGES = {
   duplicate: "This member has already been scanned for this attendance event.",
-  inactive: "This member is currently inactive and cannot be recorded for attendance.",
+  inactive:
+    "Attendance was blocked by the database's inactive-member rule. Apply supabase/patch_2026_11_02_allow_inactive_attendance.sql, then try again.",
   eventMismatch: "The selected event is not compatible with this attendance type.",
   eventRequired: "The selected event needs an Event Type before it can be linked.",
   eventMissing: "The selected event no longer exists. Choose another event or leave it blank.",

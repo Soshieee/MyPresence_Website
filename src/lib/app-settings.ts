@@ -1,4 +1,4 @@
-import { AppSettings } from "@/types";
+import type { AppSettings } from "@/types";
 
 const STORAGE_KEY = "mypresence_settings_v1";
 
@@ -26,6 +26,9 @@ export function loadAppSettings(): AppSettings {
 }
 
 export function saveAppSettings(settings: AppSettings) {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") {
+    throw new Error("Settings can only be saved in the browser.");
+  }
+
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }

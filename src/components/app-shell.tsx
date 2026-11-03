@@ -88,13 +88,6 @@ const navItems: NavItem[] = [
 ];
 
 function titleFromPath(pathname: string) {
-  if (pathname === "/") return "Dashboard";
-  if (pathname === "/register") return "Member Registration";
-  if (pathname === "/attendance") return "Live Attendance";
-  if (pathname === "/records") return "Attendance Logs";
-  if (pathname === "/events-manager") return "Event Manager";
-  if (pathname === "/members") return "Member Management";
-  if (pathname === "/settings") return "Settings";
   if (pathname === "/login") return "Login";
   return "MyPresence";
 }

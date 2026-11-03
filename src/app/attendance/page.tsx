@@ -409,37 +409,16 @@ export default function AttendancePage() {
       const memberResult = await withSupabaseRetry(() =>
         supabase
           .from("users")
-          .select("student_id, is_active")
+          .select("student_id")
           .eq("student_id", studentId)
           .maybeSingle()
       );
 
-      let memberRow: { student_id: string; is_active?: boolean | null } | null = null;
+      if (memberResult.error) throw memberResult.error;
 
-      if (memberResult.error) {
-        if (!isMissingActiveColumnError(memberResult.error.message)) throw memberResult.error;
-
-        const memberFallback = await supabase
-          .from("users")
-          .select("student_id")
-          .eq("student_id", studentId)
-          .maybeSingle();
-
-        if (memberFallback.error) throw memberFallback.error;
-        memberRow = memberFallback.data ? { ...memberFallback.data, is_active: null } : null;
-      } else {
-        memberRow = memberResult.data as { student_id: string; is_active?: boolean | null } | null;
-      }
-
-      if (!memberRow) {
+      if (!memberResult.data) {
         setStatusType("error");
         setStatusMessage(ATTENDANCE_ERROR_MESSAGES.unregistered);
-        return;
-      }
-
-      if (memberRow.is_active === false) {
-        setStatusType("info");
-        setStatusMessage(ATTENDANCE_ERROR_MESSAGES.inactive);
         return;
       }
 
@@ -509,7 +488,7 @@ export default function AttendancePage() {
 
         if (mapped) {
           if (mapped.kind === "duplicate") attendanceMarkedRef.current.add(attendanceKey);
-          setStatusType(mapped.kind === "duplicate" || mapped.kind === "inactive" ? "info" : "error");
+          setStatusType(mapped.kind === "duplicate" ? "info" : "error");
           setStatusMessage(mapped.kind === "duplicate" ? duplicateMessage : mapped.message);
           if (mapped.kind === "duplicate") {
             setLatestMatch({
@@ -569,7 +548,7 @@ export default function AttendancePage() {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
       const mapped = describeAttendanceDbError(errorMessage);
-      setStatusType(mapped?.kind === "duplicate" || mapped?.kind === "inactive" ? "info" : "error");
+      setStatusType(mapped?.kind === "duplicate" ? "info" : "error");
       setStatusMessage(mapped?.message ?? `Failed to save attendance: ${errorMessage}`);
     } finally {
       setIsSaving(false);
@@ -884,7 +863,8 @@ export default function AttendancePage() {
         </div>
 
         <p className="text-xs text-[#4f675e]">
-          Auto-save is active. Keep one clear face in frame and attendance will be saved automatically.
+          Auto-save is active. Keep one clear face in frame and attendance will be saved automatically. Active and
+          inactive members can be scanned; scanning does not change the member&apos;s account status.
         </p>
       </section>
 

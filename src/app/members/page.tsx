@@ -294,8 +294,8 @@ export default function MembersPage() {
     setStatus(
       ids.length === 1
         ? active
-          ? "Member set to Active. They can be scanned again."
-          : "Member set to Inactive. Their records and attendance history were kept."
+          ? "Member set to Active. Their records and attendance history were kept."
+          : "Member set to Inactive. They can still be scanned, and their attendance history was kept."
         : `${ids.length} members set to ${active ? "Active" : "Inactive"}. Attendance history was kept.`
     );
   };
@@ -305,7 +305,7 @@ export default function MembersPage() {
 
     if (isActive) {
       const confirmed = confirm(
-        `Set ${member.full_name} to Inactive? They will not be able to record new attendance. All history will be kept.`
+        `Set ${member.full_name} to Inactive? Their account status will stay inactive, but they can still be scanned for attendance and all history will be kept.`
       );
       if (!confirmed) return;
     }
@@ -318,7 +318,7 @@ export default function MembersPage() {
 
     if (!active) {
       const confirmed = confirm(
-        `Set ${selectedIds.length} selected members to Inactive? They will not be able to record new attendance. All history will be kept.`
+        `Set ${selectedIds.length} selected members to Inactive? Their account status will stay inactive, but they can still be scanned for attendance and all history will be kept.`
       );
       if (!confirmed) return;
     }
@@ -603,7 +603,7 @@ export default function MembersPage() {
         {filteredMembers.length === 0 ? (
           <p className="text-sm text-[#4f675e]">No members found.</p>
         ) : (
-          <table className="min-w-full border-separate border-spacing-y-2 text-sm">
+          <table className="min-w-[860px] border-separate border-spacing-y-2 text-sm">
             <thead>
               <tr className="text-left text-[#4f675e]">
                 <th className="px-3 py-2 font-semibold">
@@ -615,7 +615,7 @@ export default function MembersPage() {
                 <th className="px-3 py-2 font-semibold">Gender</th>
                 <th className="px-3 py-2 font-semibold">Newcomer</th>
                 <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold">Actions</th>
+                <th className="px-3 py-2 text-right font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -640,16 +640,28 @@ export default function MembersPage() {
                       {member.is_active === false ? "Inactive" : "Active"}
                     </span>
                   </td>
-                  <td className="rounded-r-xl px-3 py-2.5">
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={() => startEdit(member)}>Edit</button>
-                      <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={() => void openHistory(member)}>History</button>
+                  <td className="rounded-r-xl px-3 py-2.5 align-middle">
+                    <div className="ml-auto grid w-[232px] grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-full border border-[#7d968c] bg-[#f5faf8] px-2 text-xs font-semibold text-[#35554a] transition hover:bg-[#ebf4f0]"
+                        onClick={() => startEdit(member)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-full border border-[#7d968c] bg-[#f5faf8] px-2 text-xs font-semibold text-[#35554a] transition hover:bg-[#ebf4f0]"
+                        onClick={() => void openHistory(member)}
+                      >
+                        History
+                      </button>
                       <button
                         type="button"
                         className={
                           member.is_active === false
-                            ? "rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-3 py-1.5 text-xs font-semibold text-[#245142] transition hover:bg-[#dcefe6]"
-                            : "rounded-full border border-[#d9b6ba] px-3 py-1.5 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4]"
+                            ? "inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-2 text-xs font-semibold text-[#245142] transition hover:bg-[#dcefe6] disabled:cursor-not-allowed disabled:opacity-50"
+                            : "inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-full border border-[#d9b6ba] bg-white px-2 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:cursor-not-allowed disabled:opacity-50"
                         }
                         onClick={() => void toggleMemberActive(member)}
                         disabled={saving}
@@ -658,7 +670,7 @@ export default function MembersPage() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-full border border-[#c9a6aa] px-3 py-1.5 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:opacity-50"
+                        className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-full border border-[#c9a6aa] bg-white px-2 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={() => {
                           setDeleteError(null);
                           setDeleteTarget(member);
