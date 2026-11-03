@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import AppNotification, { AppNotificationTone } from "@/components/app-notification";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { toLocalDateInput } from "@/lib/date";
 import {
@@ -67,8 +68,8 @@ export default function MembersPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [eventLookup, setEventLookup] = useState<Record<string, string>>({});
   const [deleteTarget, setDeleteTarget] = useState<MemberRow | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [notification, setNotification] = useState<{ tone: AppNotificationTone; message: string } | null>(null);
 
   const loadMembers = async () => {
     if (!hasSupabaseEnv) {
@@ -403,7 +404,6 @@ export default function MembersPage() {
 
     const target = deleteTarget;
     setDeleting(true);
-    setDeleteError(null);
 
     let errorMessage: string | null = null;
 
@@ -425,8 +425,8 @@ export default function MembersPage() {
       const message = missingFunction
         ? "Delete is not available yet. Run supabase/patch_2026_10_28_delete_member.sql in the Supabase SQL Editor."
         : `Failed to delete member: ${errorMessage}`;
-      setDeleteError(message);
       setStatus(message);
+      setNotification({ tone: "error", message });
       return;
     }
 
@@ -434,9 +434,9 @@ export default function MembersPage() {
     setSelectedIds((prev) => prev.filter((id) => id !== target.id));
     if (editingId === target.id) cancelEdit();
     if (historyMember?.id === target.id) setHistoryMember(null);
-    setDeleteError(null);
     setDeleteTarget(null);
     setStatus(`${target.full_name} was deleted along with their attendance records.`);
+    setNotification({ tone: "success", message: `${target.full_name} was deleted along with their attendance records.` });
     await loadMembers();
   };
 
@@ -672,7 +672,6 @@ export default function MembersPage() {
                         type="button"
                         className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-full border border-[#c9a6aa] bg-white px-2 text-xs font-semibold text-[#8a3f46] transition hover:bg-[#fff3f4] disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={() => {
-                          setDeleteError(null);
                           setDeleteTarget(member);
                         }}
                         disabled={saving || deleting}
@@ -688,48 +687,22 @@ export default function MembersPage() {
         )}
       </section>
 
+      {notification ? (
+        <AppNotification tone={notification.tone} message={notification.message} onDismiss={() => setNotification(null)} />
+      ) : null}
       {deleteTarget ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1b2a25]/45 px-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-member-title"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-[#d8c3c5] bg-[#fbf7f2] p-5 shadow-2xl">
-            <h2 id="delete-member-title" className="font-[var(--font-heading)] text-xl text-[#3a282a]">
-              Delete Member?
-            </h2>
-            <p className="mt-3 text-sm text-[#5b4547]">
-              This permanently deletes <span className="font-semibold">{deleteTarget.full_name}</span> ({deleteTarget.student_id}) and all of their attendance records. This cannot be undone.
-            </p>
-            {deleteError ? (
-              <p className="mt-3 rounded-xl border border-[#e2b9bb] bg-[#f8eded] px-3 py-2 text-sm text-[#7a3237]">
-                {deleteError}
-              </p>
-            ) : null}
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={() => {
-                  setDeleteError(null);
-                  setDeleteTarget(null);
-                }}
-                disabled={deleting}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-full bg-[#8a3f46] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#73343a] disabled:opacity-50"
-                onClick={() => void confirmDeleteMember()}
-                disabled={deleting}
-              >
-                {deleting ? "Deleting..." : "Delete Member"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AppNotification
+          tone="warning"
+          variant="dialog"
+          title="Delete Member?"
+          message={`This permanently deletes ${deleteTarget.full_name} (${deleteTarget.student_id}) and all of their attendance records. This cannot be undone.`}
+          confirmLabel="Delete Member"
+          onCancel={() => {
+            setDeleteTarget(null);
+          }}
+          onConfirm={() => void confirmDeleteMember()}
+          busy={deleting}
+        />
       ) : null}
     </div>
   );

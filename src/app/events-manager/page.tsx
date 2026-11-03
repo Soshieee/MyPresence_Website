@@ -2,6 +2,7 @@
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
+import AppNotification, { AppNotificationTone } from "@/components/app-notification";
 import CalendarImage from "@/components/calendar-image";
 import PollPieChart from "@/components/poll-pie-chart";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
@@ -582,6 +583,9 @@ export default function EventsManagerPage() {
   const [calendarStatus, setCalendarStatus] = useState("");
   const [calendarStatusIsError, setCalendarStatusIsError] = useState(false);
   const [calendarUploading, setCalendarUploading] = useState(false);
+  const [pollDeleteTarget, setPollDeleteTarget] = useState<SavedPoll | null>(null);
+  const [notification, setNotification] = useState<{ tone: AppNotificationTone; message: string } | null>(null);
+  const [deletingPollKey, setDeletingPollKey] = useState<string | null>(null);
 
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null;
   const memberDenominator = memberDenominatorFor(selectedEvent?.event_type ?? null, memberCounts);
@@ -1213,11 +1217,12 @@ export default function EventsManagerPage() {
     );
   };
 
+  const requestDeletePoll = (poll: SavedPoll) => setPollDeleteTarget(poll);
+
   const deletePoll = async (poll: SavedPoll) => {
     const pollLabel = poll.name || poll.question;
-    if (!window.confirm(`Delete "${pollLabel}" and all of its votes? This cannot be undone.`)) {
-      return;
-    }
+    if (deletingPollKey) return;
+    setDeletingPollKey(poll.key);
 
     const choiceIds = poll.choices.map((choice) => choice.rowId);
     const rowIds = [...choiceIds, ...(poll.legacyQuestionRowId ? [poll.legacyQuestionRowId] : [])];
@@ -1251,7 +1256,8 @@ export default function EventsManagerPage() {
       .in("id", rowIds);
 
     if (error) {
-      setSuggestionStatus(`Failed to delete poll: ${error.message}`);
+      setNotification({ tone: "error", message: `Failed to delete poll: ${error.message}` });
+      setDeletingPollKey(null);
       return;
     }
 
@@ -1263,7 +1269,9 @@ export default function EventsManagerPage() {
       loadSuggestions(),
       selectedEventId ? loadSubmissions(selectedEventId) : Promise.resolve()
     ]);
-    setSuggestionStatus("Poll deleted.");
+    setDeletingPollKey(null);
+    setPollDeleteTarget(null);
+    setNotification({ tone: "success", message: `"${pollLabel}" was deleted successfully.` });
   };
 
   const startEditingPoll = (poll: SavedPoll) => {
@@ -2069,7 +2077,7 @@ export default function EventsManagerPage() {
                     memberLabel={memberDenominator.label}
                     onEdit={() => startEditingPoll(poll)}
                     onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
-                    onDelete={() => void deletePoll(poll)}
+                    onDelete={() => requestDeletePoll(poll)}
                   />
                 ))
               )}
@@ -2097,7 +2105,7 @@ export default function EventsManagerPage() {
                           memberLabel={memberDenominator.label}
                           onEdit={() => startEditingPoll(poll)}
                           onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
-                          onDelete={() => void deletePoll(poll)}
+                          onDelete={() => requestDeletePoll(poll)}
                         />
                       ))}
                     </div>
@@ -2223,6 +2231,25 @@ export default function EventsManagerPage() {
         )}
       </section>
 
+      {notification ? (
+        <AppNotification
+          tone={notification.tone}
+          message={notification.message}
+          onDismiss={() => setNotification(null)}
+        />
+      ) : null}
+      {pollDeleteTarget ? (
+        <AppNotification
+          tone="warning"
+          variant="dialog"
+          title="Delete poll?"
+          message={`Delete "${pollDeleteTarget.name || pollDeleteTarget.question}" and all of its votes? This cannot be undone.`}
+          confirmLabel="Delete Poll"
+          onCancel={() => setPollDeleteTarget(null)}
+          onConfirm={() => void deletePoll(pollDeleteTarget)}
+          busy={deletingPollKey === pollDeleteTarget.key}
+        />
+      ) : null}
       {deleteTarget ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#1b2a25]/45 px-4"

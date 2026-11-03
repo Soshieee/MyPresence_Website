@@ -58,14 +58,6 @@ function normalizeAttendanceGroup(label: string | null): AttendanceGroup | null 
   return label as AttendanceGroup;
 }
 
-function isLinkedEventFilterType(filter: AttendanceTypeFilter) {
-  return (
-    filter === "Rooftop" ||
-    filter === "Women's Network" ||
-    filter === "Men's Network"
-  );
-}
-
 function isMissingClassificationColumnError(message: string) {
   return /column\s+attendance\.(was_newcomer|attendance_context|attendance_group|event_id)\s+does not exist/i.test(message);
 }
@@ -314,6 +306,26 @@ export default function AttendanceRecordsPage() {
     });
   }, [linkedEvents, linkedEventLabelById, logs, selectedLinkedEventId]);
 
+  const availableLinkedEventOptions = useMemo(() => {
+    if (attendanceTypeFilter === "all") return linkedEventOptions;
+
+    return linkedEventOptions.filter((event) => {
+      const eventType = eventLookup[event.id]?.eventType;
+      if (eventType) return normalizeAttendanceType(eventType, null) === attendanceTypeFilter;
+      return logs.some(
+        (log) =>
+          log.event_id === event.id &&
+          normalizeAttendanceType(log.attendance_context, log.attendance_group) === attendanceTypeFilter
+      );
+    });
+  }, [attendanceTypeFilter, eventLookup, linkedEventOptions, logs]);
+
+  useEffect(() => {
+    if (selectedLinkedEventId && !availableLinkedEventOptions.some((event) => event.id === selectedLinkedEventId)) {
+      setSelectedLinkedEventId(null);
+    }
+  }, [availableLinkedEventOptions, selectedLinkedEventId]);
+
   const selectedLinkedEventLabel = useMemo(() => {
     if (!selectedLinkedEventId) return null;
     return linkedEventLabelById.get(selectedLinkedEventId) ?? `Deleted Event (${selectedLinkedEventId.slice(0, 8)})`;
@@ -342,7 +354,6 @@ export default function AttendanceRecordsPage() {
         normalizeAttendanceType(log.attendance_context, log.attendance_group) === attendanceTypeFilter;
 
       const matchesLinkedEvent =
-        !isLinkedEventFilterType(attendanceTypeFilter) ||
         !selectedLinkedEventId ||
         log.event_id === selectedLinkedEventId;
 
@@ -356,7 +367,6 @@ export default function AttendanceRecordsPage() {
   }, [attendanceTypeFilter, logs, normalizedSearch, selectedLinkedEventId, selectedNetworkSet, userNetworkMap]);
 
   const hasNoRecordsForSelectedLinkedEvent =
-    isLinkedEventFilterType(attendanceTypeFilter) &&
     Boolean(selectedLinkedEventId) &&
     filteredLogs.length === 0;
 
@@ -675,8 +685,7 @@ export default function AttendanceRecordsPage() {
           ))}
         </div>
 
-        {isLinkedEventFilterType(attendanceTypeFilter) ? (
-          <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3">
             <div className="w-full sm:max-w-sm">
               <label className="field-label" htmlFor="linked-event-filter">
                 Filter By Linked Event
@@ -686,10 +695,10 @@ export default function AttendanceRecordsPage() {
                 className="field-input"
                 value={selectedLinkedEventId ?? ""}
                 onChange={(event) => setSelectedLinkedEventId(event.target.value || null)}
-                disabled={linkedEventOptions.length === 0}
+                disabled={availableLinkedEventOptions.length === 0}
               >
                 <option value="">All Linked Events</option>
-                {linkedEventOptions.map((event) => (
+                {availableLinkedEventOptions.map((event) => (
                   <option key={event.id} value={event.id}>
                     {event.label}
                   </option>
@@ -702,7 +711,6 @@ export default function AttendanceRecordsPage() {
               </button>
             ) : null}
           </div>
-        ) : null}
 
         <div>
           <label className="field-label" htmlFor="record-search">
