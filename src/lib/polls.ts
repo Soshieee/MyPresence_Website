@@ -18,6 +18,7 @@ export type PollDraft = {
   key: string;
   name: string;
   mainQuestion: string;
+  hashtagIds: string[];
   question: string;
   startsAt: string;
   endsAt: string;
@@ -127,6 +128,7 @@ export function createPollDraft(): PollDraft {
     key: crypto.randomUUID(),
     name: "",
     mainQuestion: "",
+    hashtagIds: [],
     question: "",
     startsAt: "",
     endsAt: "",

@@ -25,7 +25,8 @@ import {
   EventItem,
   EventPollSubmission,
   EventSuggestion,
-  PollStatus
+  PollStatus,
+  SocialHashtag
 } from "@/types";
 import {
   EVENT_TYPES,
@@ -61,6 +62,7 @@ type SavedPoll = {
   key: string;
   name: string;
   mainQuestion: string;
+  hashtagIds: string[];
   question: string;
   startsAt: string | null;
   endsAt: string | null;
@@ -75,6 +77,7 @@ type PollDraftEditorProps = {
   onChange: (draft: ReturnType<typeof createPollDraft>) => void;
   onRemove: () => void;
   scheduleReady: boolean;
+  hashtags: SocialHashtag[];
   removeLabel?: string;
 };
 
@@ -170,7 +173,7 @@ function isPollSuggestionRow(row: EventSuggestion) {
   );
 }
 
-function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
+function buildPolls(rows: EventSuggestion[], eventType: EventType | null, pollHashtagIds: Map<string, string[]>): SavedPoll[] {
   const polls = new Map<string, SavedPoll>();
 
   for (const row of rows) {
@@ -180,8 +183,9 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
     const key = rowPollKey(row);
     const poll = polls.get(key) ?? {
       key,
-      name: "",
+      name: eventType ?? "Event",
       mainQuestion: "",
+      hashtagIds: pollHashtagIds.get(key) ?? [],
       question: "",
       startsAt: null,
       endsAt: null,
@@ -195,14 +199,12 @@ function buildPolls(rows: EventSuggestion[]): SavedPoll[] {
       poll.createdAt = row.created_at;
     }
 
-    const pollName = row.poll_name?.trim() ?? "";
+    const pollName = eventType ?? row.poll_name?.trim() ?? "Event";
     const mainQuestionText = row.main_question?.trim() ?? "";
     const questionText = row.suggestion_question_text?.trim() ?? "";
     const rowStatus = isPollStatus(row.poll_status) ? row.poll_status : null;
 
-    if (pollName && !poll.name) {
-      poll.name = pollName;
-    }
+    poll.name = pollName;
 
     if (row.poll_starts_at && !poll.startsAt) {
       poll.startsAt = row.poll_starts_at;
@@ -258,11 +260,69 @@ function statusBadgeClass(status: PollEffectiveStatus) {
   return "border-[#9fc6b7] bg-[#e7f4ee] text-[#245142]";
 }
 
+function displayHashtag(name: string) {
+  return name.startsWith("#") ? name : `#${name}`;
+}
+
+function HashtagPicker({
+  hashtags,
+  selectedIds,
+  onChange,
+  label = "#Hashtags"
+}: {
+  hashtags: SocialHashtag[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  label?: string;
+}) {
+  const [search, setSearch] = useState("");
+  const selected = new Set(selectedIds);
+  const filtered = hashtags.filter((hashtag) => hashtag.is_active && (
+    displayHashtag(hashtag.name).toLowerCase().includes(search.trim().toLowerCase())
+  ));
+
+  const toggle = (id: string) => {
+    onChange(selected.has(id) ? selectedIds.filter((value) => value !== id) : [...selectedIds, id]);
+  };
+
+  return (
+    <div className="mt-3">
+      <label className="field-label">{label}</label>
+      <input
+        className="field-input"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder="Search hashtags"
+        aria-label="Search hashtags"
+      />
+      <div className="mt-2 flex max-h-32 flex-wrap gap-2 overflow-y-auto">
+        {filtered.map((hashtag) => (
+          <button
+            key={hashtag.id}
+            type="button"
+            className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+              selected.has(hashtag.id)
+                ? "border-[#477c69] bg-[#dceee6] text-[#245142]"
+                : "border-[#c4d3ce] bg-white text-[#5e766c]"
+            }`}
+            onClick={() => toggle(hashtag.id)}
+            aria-pressed={selected.has(hashtag.id)}
+          >
+            {displayHashtag(hashtag.name)}
+          </button>
+        ))}
+        {!filtered.length ? <p className="text-xs text-[#7a8b84]">No hashtags found.</p> : null}
+      </div>
+    </div>
+  );
+}
+
 function PollDraftEditor({
   draft,
   onChange,
   onRemove,
   scheduleReady,
+  hashtags,
   removeLabel = "Remove poll"
 }: PollDraftEditorProps) {
   const updateChoice = (choiceKey: string, text: string) => {
@@ -278,40 +338,12 @@ function PollDraftEditor({
     <section className="border-l-4 border-[#4285f4] bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
-          <label className="field-label" htmlFor={`poll-name-${draft.key}`}>
-            Poll name
-          </label>
-          <input
-            id={`poll-name-${draft.key}`}
-            className="field-input rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
-            value={draft.name}
-            onChange={(event) => onChange({ ...draft, name: event.target.value })}
-            placeholder="e.g. Sunday lunch preference"
-            disabled={!scheduleReady}
-          />
-          <p className="mt-1 text-xs text-[#5e766c]">
-            Optional label used to identify this poll in the management list.
-          </p>
+          <p className="field-label">Poll label</p>
+          <p className="text-sm font-semibold text-[#2f4d43]">Automatically uses the event type.</p>
         </div>
         <button type="button" className="btn-ghost px-3 py-1 text-xs" onClick={onRemove}>
           {removeLabel}
         </button>
-      </div>
-
-      <div className="mt-3">
-        <label className="field-label" htmlFor={`poll-main-question-${draft.key}`}>
-          Main question / description
-        </label>
-        <textarea
-          id={`poll-main-question-${draft.key}`}
-          className="field-input min-h-20 rounded-none border-0 border-b-2 border-[#dadce0] bg-[#f8f9fa] focus:border-[#4285f4] focus:ring-0"
-          value={draft.mainQuestion}
-          onChange={(event) => onChange({ ...draft, mainQuestion: event.target.value })}
-          placeholder="What would you like to ask the members?"
-        />
-        <p className="mt-1 text-xs text-[#5e766c]">
-          Shown first in the app. If left blank, the app uses the event details shown above the polls.
-        </p>
       </div>
 
       <div className="mt-3">
@@ -359,10 +391,14 @@ function PollDraftEditor({
         Times use this device&apos;s local timezone. Leave the start blank to open the poll immediately. Leave the end
         blank to keep it open until you close it manually.
       </p>
+      <HashtagPicker
+        hashtags={hashtags}
+        selectedIds={draft.hashtagIds}
+        onChange={(hashtagIds) => onChange({ ...draft, hashtagIds })}
+      />
       {!scheduleReady ? (
         <p className="mt-2 rounded-lg border border-[#e3c98f] bg-[#fdf6e6] px-3 py-2 text-xs font-semibold text-[#7a5a17]">
-          Poll names and schedules need supabase/patch_2026_11_02_poll_name_schedule.sql. Existing poll editing still
-          works without them.
+          Poll schedules need supabase/patch_2026_11_02_poll_name_schedule.sql. Poll labels always use the event type.
         </p>
       ) : null}
 
@@ -413,6 +449,7 @@ function PollResultCard({
   total,
   memberCount,
   memberLabel,
+  hashtags,
   onEdit,
   onStatusChange,
   onDelete
@@ -423,6 +460,7 @@ function PollResultCard({
   total: number;
   memberCount: number;
   memberLabel: string;
+  hashtags: SocialHashtag[];
   onEdit: () => void;
   onStatusChange: (status: PollStatus) => void;
   onDelete: () => void;
@@ -464,21 +502,25 @@ function PollResultCard({
               {total} {total === 1 ? "vote" : "votes"}
             </span>
           </div>
-          <p className="mt-2 font-[var(--font-heading)] text-lg text-[#243730]">
-            {poll.name || "Untitled poll"}
-          </p>
+          <p className="mt-2 font-[var(--font-heading)] text-lg text-[#243730]">{poll.name}</p>
           <p className="mt-1 text-xs text-[#5e766c]">
             {startsAtLabel ? `Starts ${startsAtLabel}` : "Starts immediately"}
             {" • "}
             {endsAtLabel ? `Ends ${endsAtLabel}` : "No end time"}
           </p>
-          <div className="mt-2 space-y-2">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">Main question</p>
-              <p className="font-semibold text-[#2f4d43]">
-                {poll.mainQuestion || "Not set - the app will show the event details."}
-              </p>
+          {poll.hashtagIds.length ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {poll.hashtagIds.map((id) => {
+                const hashtag = hashtags.find((item) => item.id === id);
+                return hashtag ? (
+                  <span key={id} className="rounded-full bg-[#edf5f2] px-2 py-1 text-[10px] font-semibold text-[#406357]">
+                    {displayHashtag(hashtag.name)}
+                  </span>
+                ) : null;
+              })}
             </div>
+          ) : null}
+          <div className="mt-2 space-y-2">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">Poll question</p>
               <p className="font-semibold text-[#2f4d43]">{poll.question}</p>
@@ -548,6 +590,7 @@ export default function EventsManagerPage() {
   const [eventType, setEventType] = useState<EventType | "">("");
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [newEventPolls, setNewEventPolls] = useState<ReturnType<typeof createPollDraft>[]>([]);
+  const [newEventHashtagIds, setNewEventHashtagIds] = useState<string[]>([]);
   const [additionalPolls, setAdditionalPolls] = useState<ReturnType<typeof createPollDraft>[]>([]);
   const [editingPoll, setEditingPoll] = useState<ReturnType<typeof createPollDraft> | null>(null);
   const [showArchivedPolls, setShowArchivedPolls] = useState(false);
@@ -556,8 +599,12 @@ export default function EventsManagerPage() {
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [eventSuggestions, setEventSuggestions] = useState<EventSuggestion[]>([]);
+  const [hashtags, setHashtags] = useState<SocialHashtag[]>([]);
+  const [eventHashtagIds, setEventHashtagIds] = useState<string[]>([]);
+  const [pollHashtagRows, setPollHashtagRows] = useState<Array<{ event_id: string; poll_key: string; hashtag_id: string }>>([]);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [suggestionInput, setSuggestionInput] = useState("");
+  const [newHashtagInput, setNewHashtagInput] = useState("");
   const [suggestionStatus, setSuggestionStatus] = useState("");
   const [submissionStatus, setSubmissionStatus] = useState("");
   const [selectedEventAttendance, setSelectedEventAttendance] = useState<EventAttendanceRow[]>([]);
@@ -595,9 +642,26 @@ export default function EventsManagerPage() {
     [eventSuggestions, selectedEventId]
   );
 
+  const pollHashtagIds = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const row of pollHashtagRows) {
+      const current = map.get(`${row.event_id}:${row.poll_key}`) ?? [];
+      map.set(`${row.event_id}:${row.poll_key}`, [...current, row.hashtag_id]);
+    }
+    return map;
+  }, [pollHashtagRows]);
+
   const selectedEventPolls = useMemo(
-    () => buildPolls(selectedEventSuggestions),
-    [selectedEventSuggestions]
+    () => {
+      if (!selectedEventId) return [];
+      const eventPollHashtags = new Map<string, string[]>();
+      for (const [key, ids] of pollHashtagIds) {
+        const prefix = `${selectedEventId}:`;
+        if (key.startsWith(prefix)) eventPollHashtags.set(key.slice(prefix.length), ids);
+      }
+      return buildPolls(selectedEventSuggestions, selectedEvent?.event_type ?? null, eventPollHashtags);
+    },
+    [pollHashtagIds, selectedEvent, selectedEventId, selectedEventSuggestions]
   );
 
   const selectedEventPlainSuggestions = useMemo(
@@ -744,7 +808,7 @@ export default function EventsManagerPage() {
       setPollScheduleReady(false);
       setEventSuggestions((withoutSchedule.data ?? []) as EventSuggestion[]);
       setSuggestionStatus(
-        "Poll naming and scheduling are not enabled yet. Run supabase/patch_2026_11_02_poll_name_schedule.sql in the Supabase SQL Editor."
+        "Poll scheduling is not enabled yet. Run supabase/patch_2026_11_02_poll_name_schedule.sql in the Supabase SQL Editor."
       );
       return;
     }
@@ -771,6 +835,36 @@ export default function EventsManagerPage() {
       "Poll editing is not enabled yet. Run supabase/patch_2026_10_22_polls_calendar.sql and supabase/patch_2026_10_24_poll_main_question.sql in Supabase SQL Editor."
     );
   }, []);
+
+  const loadHashtags = useCallback(async () => {
+    if (!hasSupabaseEnv) return;
+
+    const [hashtagsResult, eventLinksResult, pollLinksResult] = await Promise.all([
+      supabase
+        .from("social_hashtags")
+        .select("id, name, normalized_name, is_default, is_active, created_at")
+        .order("is_default", { ascending: false })
+        .order("normalized_name", { ascending: true }),
+      supabase.from("event_hashtags").select("event_id, hashtag_id"),
+      supabase.from("poll_hashtags").select("event_id, poll_key, hashtag_id")
+    ]);
+
+    const error = hashtagsResult.error ?? eventLinksResult.error ?? pollLinksResult.error;
+    if (error) {
+      setNotification({ tone: "error", message: `Failed to load hashtags: ${error.message}` });
+      return;
+    }
+
+    setHashtags((hashtagsResult.data ?? []) as SocialHashtag[]);
+    setEventHashtagIds(
+      selectedEventId
+        ? ((eventLinksResult.data ?? []) as Array<{ event_id: string; hashtag_id: string }>)
+            .filter((row) => row.event_id === selectedEventId)
+            .map((row) => row.hashtag_id)
+        : []
+    );
+    setPollHashtagRows((pollLinksResult.data ?? []) as Array<{ event_id: string; poll_key: string; hashtag_id: string }>);
+  }, [selectedEventId]);
 
   const loadSubmissions = useCallback(async (eventId: string) => {
     if (!hasSupabaseEnv) return;
@@ -896,13 +990,14 @@ export default function EventsManagerPage() {
       void loadEvents();
       void loadMemberCounts();
       void loadSuggestions();
+      void loadHashtags();
       void loadCalendar();
     }, 0);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [loadCalendar, loadEvents, loadMemberCounts, loadSuggestions]);
+  }, [loadCalendar, loadEvents, loadHashtags, loadMemberCounts, loadSuggestions]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -967,6 +1062,72 @@ export default function EventsManagerPage() {
     setSuggestionStatus("Suggestion added.");
   };
 
+  const addHashtag = async () => {
+    const value = newHashtagInput.trim();
+    if (!value) {
+      setNotification({ tone: "warning", message: "Enter a hashtag first." });
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("social_hashtags")
+        .insert({ name: value, is_active: true })
+        .select("id, name, normalized_name, is_default, is_active, created_at")
+        .single();
+
+      if (error) {
+        if (error.code === "23505") {
+          setNotification({ tone: "warning", message: "That hashtag already exists." });
+        } else {
+          setNotification({ tone: "error", message: `Failed to create hashtag: ${error.message}` });
+        }
+        return;
+      }
+
+      setHashtags((previous) => [...previous, data as SocialHashtag].sort((a, b) => a.normalized_name.localeCompare(b.normalized_name)));
+      setNewHashtagInput("");
+      setNotification({ tone: "success", message: `${(data as SocialHashtag).name} was created.` });
+    } catch (error) {
+      setNotification({ tone: "error", message: `Failed to create hashtag: ${error instanceof Error ? error.message : "Unknown error."}` });
+    }
+  };
+
+  const saveEventHashtags = async (eventId: string, hashtagIds: string[]) => {
+    const { error: deleteError } = await supabase.from("event_hashtags").delete().eq("event_id", eventId);
+    if (deleteError) return deleteError;
+    if (!hashtagIds.length) return null;
+
+    const { error } = await supabase.from("event_hashtags").insert(
+      [...new Set(hashtagIds)].map((hashtag_id) => ({ event_id: eventId, hashtag_id }))
+    );
+    return error;
+  };
+
+  const savePollHashtags = async (eventId: string, pollKey: string, hashtagIds: string[]) => {
+    const { error: deleteError } = await supabase
+      .from("poll_hashtags")
+      .delete()
+      .eq("event_id", eventId)
+      .eq("poll_key", pollKey);
+    if (deleteError) return deleteError;
+    if (!hashtagIds.length) return null;
+
+    const { error } = await supabase.from("poll_hashtags").insert(
+      [...new Set(hashtagIds)].map((hashtag_id) => ({ event_id: eventId, poll_key: pollKey, hashtag_id }))
+    );
+    return error;
+  };
+
+  const ensureEventHashtags = async (eventId: string, hashtagIds: string[]) => {
+    if (!hashtagIds.length) return null;
+    const { error } = await supabase.from("event_hashtags").upsert(
+      [...new Set(hashtagIds)].map((hashtag_id) => ({ event_id: eventId, hashtag_id })),
+      { onConflict: "event_id,hashtag_id", ignoreDuplicates: true }
+    );
+    return error;
+  };
+
   const removeSuggestion = async (suggestionId: string) => {
     const { error } = await supabase.from("event_suggestions").delete().eq("id", suggestionId);
     if (error) {
@@ -996,7 +1157,6 @@ export default function EventsManagerPage() {
     }
 
     const pollKey = isUuid(draft.key) ? draft.key : crypto.randomUUID();
-    const mainQuestion = draft.mainQuestion.trim();
     const question = draft.question.trim();
     const choices = draft.choices
       .map((choice) => ({ ...choice, text: choice.text.trim() }))
@@ -1007,7 +1167,6 @@ export default function EventsManagerPage() {
     );
     const schedulePayload = pollScheduleReady
       ? {
-          poll_name: draft.name.trim() || null,
           poll_starts_at: dateTimeLocalToIso(draft.startsAt),
           poll_ends_at: dateTimeLocalToIso(draft.endsAt)
         }
@@ -1023,7 +1182,7 @@ export default function EventsManagerPage() {
       const rows = choices.map((choice, index) => ({
         event_id: eventId,
         suggestion_text: choice.text,
-        main_question: mainQuestion || null,
+        main_question: null,
         suggestion_question_text: question,
         ...schedulePayload,
         poll_key: pollKey,
@@ -1040,7 +1199,12 @@ export default function EventsManagerPage() {
         return fail(`Failed to save poll: ${error.message}`);
       }
 
+      const hashtagError = await savePollHashtags(eventId, pollKey, draft.hashtagIds);
+      if (hashtagError) return fail(`Failed to save poll hashtags: ${hashtagError.message}`);
+      const eventHashtagError = await ensureEventHashtags(eventId, draft.hashtagIds);
+      if (eventHashtagError) return fail(`Failed to associate poll hashtags with the event: ${eventHashtagError.message}`);
       await loadSuggestions();
+      await loadHashtags();
       setSuggestionStatus("Poll saved.");
       return true;
     }
@@ -1057,7 +1221,7 @@ export default function EventsManagerPage() {
       const choice = choices[index];
       const choicePayload = {
         suggestion_text: choice.text,
-        main_question: mainQuestion || null,
+        main_question: null,
         suggestion_question_text: question,
         ...schedulePayload,
         poll_key: pollKey,
@@ -1125,7 +1289,7 @@ export default function EventsManagerPage() {
       const archiveResult = await supabase
         .from("event_suggestions")
         .update({
-          main_question: mainQuestion || null,
+          main_question: null,
           suggestion_question_text: question,
           ...schedulePayload,
           poll_status: draft.status,
@@ -1146,7 +1310,7 @@ export default function EventsManagerPage() {
         const questionUpdate = await supabase
           .from("event_suggestions")
           .update({
-            main_question: mainQuestion || null,
+            main_question: null,
             suggestion_question_text: question,
             ...schedulePayload,
             poll_status: draft.status,
@@ -1173,6 +1337,11 @@ export default function EventsManagerPage() {
     }
 
     await Promise.all([loadSuggestions(), loadSubmissions(eventId)]);
+    const hashtagError = await savePollHashtags(eventId, pollKey, draft.hashtagIds);
+    if (hashtagError) return fail(`Failed to save poll hashtags: ${hashtagError.message}`);
+    const eventHashtagError = await ensureEventHashtags(eventId, draft.hashtagIds);
+    if (eventHashtagError) return fail(`Failed to associate poll hashtags with the event: ${eventHashtagError.message}`);
+    await loadHashtags();
     setSuggestionStatus(
       keptLegacyQuestion
         ? "Poll updated. A legacy question row with existing votes was kept so no votes were lost."
@@ -1250,6 +1419,19 @@ export default function EventsManagerPage() {
         .in("poll_id", choiceIds);
     }
 
+    if (selectedEventId && isUuid(poll.key)) {
+      const { error: hashtagError } = await supabase
+        .from("poll_hashtags")
+        .delete()
+        .eq("event_id", selectedEventId)
+        .eq("poll_key", poll.key);
+      if (hashtagError) {
+        setNotification({ tone: "error", message: `Failed to delete poll hashtags: ${hashtagError.message}` });
+        setDeletingPollKey(null);
+        return;
+      }
+    }
+
     const { error } = await supabase
       .from("event_suggestions")
       .delete()
@@ -1279,6 +1461,7 @@ export default function EventsManagerPage() {
       key: poll.key,
       name: poll.name,
       mainQuestion: poll.mainQuestion,
+      hashtagIds: poll.hashtagIds,
       question: poll.question,
       startsAt: isoToDateTimeLocal(poll.startsAt),
       endsAt: isoToDateTimeLocal(poll.endsAt),
@@ -1529,12 +1712,13 @@ export default function EventsManagerPage() {
     setEventType("");
     setEditingEventId(null);
     setNewEventPolls([]);
+    setNewEventHashtagIds([]);
     setLocation("");
     setEventDate("");
     setPosterUrl(null);
   };
 
-  const startEditingEvent = (item: EventItem) => {
+  const startEditingEvent = async (item: EventItem) => {
     setEditingEventId(item.id);
     setTitle(item.title);
     setDetails(item.details ?? "");
@@ -1543,6 +1727,15 @@ export default function EventsManagerPage() {
     setPosterUrl(item.poster_url);
     setEventType(item.event_type ?? "");
     setNewEventPolls([]);
+    const { data: linkedHashtags, error } = await supabase
+      .from("event_hashtags")
+      .select("hashtag_id")
+      .eq("event_id", item.id);
+    if (!error) {
+      setNewEventHashtagIds((linkedHashtags ?? []).map((row) => String(row.hashtag_id)));
+    } else {
+      setNewEventHashtagIds(eventHashtagIds);
+    }
     setSelectedEventId(item.id);
     setStatus(
       item.event_type
@@ -1637,8 +1830,15 @@ export default function EventsManagerPage() {
         return;
       }
 
+      const hashtagError = await saveEventHashtags(editingEventId, newEventHashtagIds);
+      if (hashtagError) {
+        setStatus(`Event updated, but hashtags could not be saved: ${hashtagError.message}`);
+        return;
+      }
+
       resetEventForm();
       await loadEvents();
+      await loadHashtags();
       setStatus("Event updated successfully.");
       return;
     }
@@ -1667,6 +1867,11 @@ export default function EventsManagerPage() {
 
       setStatus(`Failed to save event: ${error.message}`);
       return;
+    }
+
+    const hashtagError = await saveEventHashtags(createdEvent.id, newEventHashtagIds);
+    if (hashtagError) {
+      setStatus(`Event saved, but hashtags could not be saved: ${hashtagError.message}`);
     }
 
     let pollsSaved = true;
@@ -1745,6 +1950,36 @@ export default function EventsManagerPage() {
             </p>
           </div>
 
+          <section className="rounded-xl border border-[#cbd8d3] bg-[#f7faf8] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="font-semibold text-[#2f4d43]">Hashtags</h3>
+                <p className="text-xs text-[#5e766c]">System hashtags and newly created hashtags are available here and in polls.</p>
+              </div>
+              <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">
+                {hashtags.filter((hashtag) => hashtag.is_default).length} system
+              </span>
+            </div>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <input
+                className="field-input"
+                value={newHashtagInput}
+                onChange={(event) => setNewHashtagInput(event.target.value)}
+                placeholder="#new-hashtag"
+                aria-label="New hashtag"
+              />
+              <button type="button" className="btn-ghost shrink-0" onClick={() => void addHashtag()}>
+                Create hashtag
+              </button>
+            </div>
+            <HashtagPicker
+              hashtags={hashtags}
+              selectedIds={newEventHashtagIds}
+              onChange={setNewEventHashtagIds}
+              label="Available event hashtags"
+            />
+          </section>
+
           {!editingEventId ? (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1758,7 +1993,7 @@ export default function EventsManagerPage() {
                 </button>
               </div>
               <p className="text-xs text-[#5e766c]">
-                Give each poll a name, optionally schedule when voting opens and closes, and add its question and
+                Optionally schedule when voting opens and closes, then add each poll question and
                 options. App users vote once per active poll.
               </p>
               {newEventPolls.map((poll, pollIndex) => (
@@ -1774,6 +2009,7 @@ export default function EventsManagerPage() {
                     setNewEventPolls((previous) => previous.filter((item) => item.key !== poll.key))
                   }
                   scheduleReady={pollScheduleReady}
+                  hashtags={hashtags}
                 />
               ))}
             </div>
@@ -1856,7 +2092,7 @@ export default function EventsManagerPage() {
                         className="btn-ghost px-3 py-1 text-xs"
                         onClick={(event) => {
                           event.stopPropagation();
-                          startEditingEvent(item);
+                          void startEditingEvent(item);
                         }}
                       >
                         Edit
@@ -2054,9 +2290,8 @@ export default function EventsManagerPage() {
               ) : null}
               {pollSchemaReady && !pollScheduleReady ? (
                 <p className="status-info">
-                  Poll naming and scheduling are not enabled yet. Run
-                  supabase/patch_2026_11_02_poll_name_schedule.sql to add names, start times, and end times. Existing
-                  poll editing still works.
+                  Poll scheduling is not enabled yet. Run supabase/patch_2026_11_02_poll_name_schedule.sql to add start
+                  and end times. Poll labels use the event type.
                 </p>
               ) : null}
               {submissionStatus ? <p className="status-info">{submissionStatus}</p> : null}
@@ -2075,6 +2310,7 @@ export default function EventsManagerPage() {
                     total={pollVoteTotal(poll)}
                     memberCount={memberDenominator.count}
                     memberLabel={memberDenominator.label}
+                    hashtags={hashtags}
                     onEdit={() => startEditingPoll(poll)}
                     onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
                     onDelete={() => requestDeletePoll(poll)}
@@ -2103,6 +2339,7 @@ export default function EventsManagerPage() {
                           total={pollVoteTotal(poll)}
                           memberCount={memberDenominator.count}
                           memberLabel={memberDenominator.label}
+                          hashtags={hashtags}
                           onEdit={() => startEditingPoll(poll)}
                           onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
                           onDelete={() => requestDeletePoll(poll)}
@@ -2129,6 +2366,7 @@ export default function EventsManagerPage() {
                     onChange={setEditingPoll}
                     onRemove={() => setEditingPoll(null)}
                     scheduleReady={pollScheduleReady}
+                    hashtags={hashtags}
                     removeLabel="Cancel"
                   />
                   <button type="submit" className="btn-primary">Save changes</button>
@@ -2164,6 +2402,7 @@ export default function EventsManagerPage() {
                         setAdditionalPolls((previous) => previous.filter((item) => item.key !== poll.key))
                       }
                       scheduleReady={pollScheduleReady}
+                      hashtags={hashtags}
                     />
                   ))}
                   <button type="submit" className="btn-primary">Save polls</button>

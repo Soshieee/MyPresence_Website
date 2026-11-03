@@ -18,6 +18,7 @@ import {
 import { toLocalDateInput } from "@/lib/date";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
+type RecordsView = "attendance" | "lifegroups";
 type AttendanceTypeFilter = "all" | AttendanceType;
 type EventLookup = {
   title: string;
@@ -51,6 +52,16 @@ type LinkedEvent = {
   event_date: string | null;
 };
 
+type Lifegroup = {
+  id: string;
+  name: string;
+};
+
+type LifegroupMemberLink = {
+  lifegroup_id: string;
+  user_id: string;
+};
+
 function normalizeAttendanceGroup(label: string | null): AttendanceGroup | null {
   if (label === "Male") return "Men's Network";
   if (label === "Female") return "Women's Network";
@@ -77,6 +88,12 @@ export default function AttendanceRecordsPage() {
   const [error, setError] = useState("");
   const [eventLookup, setEventLookup] = useState<Record<string, EventLookup>>({});
   const [page, setPage] = useState(1);
+  const [recordsView, setRecordsView] = useState<RecordsView>("attendance");
+  const [lifegroups, setLifegroups] = useState<Lifegroup[]>([]);
+  const [lifegroupMemberLinks, setLifegroupMemberLinks] = useState<LifegroupMemberLink[]>([]);
+  const [lifegroupError, setLifegroupError] = useState("");
+  const [selectedLifegroupId, setSelectedLifegroupId] = useState<string>("all");
+  const [selectedLifegroupMemberId, setSelectedLifegroupMemberId] = useState<string>("all");
 
   const range = useMemo(() => {
     const today = new Date();
@@ -142,6 +159,22 @@ export default function AttendanceRecordsPage() {
       const usersResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
       if (!usersResult.error) {
         setUsers((usersResult.data ?? []) as UserFace[]);
+      }
+
+      const [lifegroupsResult, memberLinksResult] = await Promise.all([
+        supabase.from("lifegroups").select("id, name").order("name", { ascending: true }),
+        supabase.from("lifegroup_members").select("lifegroup_id, user_id")
+      ]);
+      if (lifegroupsResult.error || memberLinksResult.error) {
+        setLifegroupError(
+          lifegroupsResult.error?.message ??
+          memberLinksResult.error?.message ??
+          "Lifegroup data could not be loaded."
+        );
+      } else {
+        setLifegroups((lifegroupsResult.data ?? []) as Lifegroup[]);
+        setLifegroupMemberLinks((memberLinksResult.data ?? []) as LifegroupMemberLink[]);
+        setLifegroupError("");
       }
 
       const eventsResult = await supabase
@@ -570,13 +603,146 @@ export default function AttendanceRecordsPage() {
     };
   }, [filteredLogs, userNetworkMap, userProfileMap]);
 
+  const lifegroupAnalytics = useMemo(() => {
+    const userById = new Map(users.map((user) => [user.id, user]));
+    const memberStudentIds = new Map<string, string[]>();
+
+    for (const link of lifegroupMemberLinks) {
+      const user = userById.get(link.user_id);
+      const studentId = user?.student_id ?? (users.some((item) => item.student_id === link.user_id) ? link.user_id : null);
+      if (!studentId) continue;
+      const current = memberStudentIds.get(link.lifegroup_id) ?? [];
+      if (!current.includes(studentId)) current.push(studentId);
+      memberStudentIds.set(link.lifegroup_id, current);
+    }
+
+    const selectedMemberIds = selectedLifegroupId === "all"
+      ? new Set(Array.from(memberStudentIds.values()).flat())
+      : new Set(memberStudentIds.get(selectedLifegroupId) ?? []);
+    const scopedLogs = filteredLogs.filter((log) => {
+      if (!selectedMemberIds.has(log.student_id)) return false;
+      return selectedLifegroupMemberId === "all" || log.student_id === selectedLifegroupMemberId;
+    });
+
+    const totals = lifegroups.map((lifegroup, index) => ({
+      label: lifegroup.name,
+      value: (memberStudentIds.get(lifegroup.id) ?? []).reduce(
+        (total, studentId) => total + filteredLogs.filter((log) => log.student_id === studentId).length,
+        0
+      ),
+      color: GROUP_COLORS[Object.keys(GROUP_COLORS)[index % Object.keys(GROUP_COLORS).length] as keyof typeof GROUP_COLORS] ?? "#0f766e"
+    }));
+
+    const daily = new Map<string, number>();
+    for (const log of scopedLogs) daily.set(log.attended_date, (daily.get(log.attended_date) ?? 0) + 1);
+    const trend = Array.from(daily.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-10)
+      .map(([date, value]) => ({ label: formatDateMMDDYY(date), value }));
+
+    const members = (memberStudentIds.get(selectedLifegroupId) ?? [])
+      .map((studentId) => userById.get(studentId) ?? users.find((user) => user.student_id === studentId))
+      .filter((user): user is UserFace => Boolean(user))
+      .sort((a, b) => a.full_name.localeCompare(b.full_name));
+
+    return { totals, trend, members, scopedCount: scopedLogs.length };
+  }, [
+    filteredLogs,
+    formatDateMMDDYY,
+    lifegroupMemberLinks,
+    lifegroups,
+    selectedLifegroupId,
+    selectedLifegroupMemberId,
+    users
+  ]);
+
   return (
     <div className="space-y-6 reveal">
       <section>
-        <h1 className="page-title font-[var(--font-heading)]">Attendance Analytics</h1>
-        <p className="page-subtitle">Explore attendance trends, service mix, and attendee demographics.</p>
+        <h1 className="page-title font-[var(--font-heading)]">Records Analytics</h1>
+        <p className="page-subtitle">Explore attendance trends and lifegroup activity using your existing records.</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={recordsView === "attendance" ? "btn-primary" : "btn-ghost"}
+            onClick={() => setRecordsView("attendance")}
+          >
+            Attendance Records
+          </button>
+          <button
+            type="button"
+            className={recordsView === "lifegroups" ? "btn-primary" : "btn-ghost"}
+            onClick={() => setRecordsView("lifegroups")}
+          >
+            Lifegroup Analytics
+          </button>
+        </div>
       </section>
 
+      {recordsView === "lifegroups" ? (
+        <section className="space-y-6">
+          {lifegroupError ? <div className="status-error">{lifegroupError}</div> : null}
+          <section className="analytics-strip">
+            <article className="analytics-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Lifegroups</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroups.length}</p>
+            </article>
+            <article className="analytics-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Tracked Activity</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.scopedCount}</p>
+            </article>
+            <article className="analytics-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Date Range</p>
+              <p className="mt-2 text-sm font-semibold text-[#22322d]">{range.from} to {range.to}</p>
+            </article>
+          </section>
+
+          <section className="card grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="field-label" htmlFor="lifegroup-filter">Filter by Lifegroup</label>
+              <select
+                id="lifegroup-filter"
+                className="field-input"
+                value={selectedLifegroupId}
+                onChange={(event) => {
+                  setSelectedLifegroupId(event.target.value);
+                  setSelectedLifegroupMemberId("all");
+                }}
+              >
+                <option value="all">All Lifegroups</option>
+                {lifegroups.map((lifegroup) => (
+                  <option key={lifegroup.id} value={lifegroup.id}>{lifegroup.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="field-label" htmlFor="lifegroup-member-filter">Track Member Activity</label>
+              <select
+                id="lifegroup-member-filter"
+                className="field-input"
+                value={selectedLifegroupMemberId}
+                onChange={(event) => setSelectedLifegroupMemberId(event.target.value)}
+                disabled={selectedLifegroupId === "all"}
+              >
+                <option value="all">All Members</option>
+                {lifegroupAnalytics.members.map((member) => (
+                  <option key={member.student_id} value={member.student_id}>{member.full_name}</option>
+                ))}
+              </select>
+            </div>
+          </section>
+
+          <section className="analytics-panel">
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Activity</h2>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <LineChart title="All Lifegroups Overview" items={lifegroupAnalytics.totals} emptyText="No lifegroup activity in this range." />
+              <LineChart title="Activity Over Time" items={lifegroupAnalytics.trend} emptyText="No activity for the selected lifegroup." />
+            </div>
+          </section>
+        </section>
+      ) : null}
+
+      <div className={recordsView === "attendance" ? "space-y-6" : "hidden"}>
       <section className="analytics-strip">
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Attendees</p>
@@ -839,6 +1005,7 @@ export default function AttendanceRecordsPage() {
           <LineChart title="Attendee Gender Distribution" items={demographicAnalytics.genderDistribution} emptyText="No gender data available." />
         </div>
       </section>
+      </div>
     </div>
   );
 }

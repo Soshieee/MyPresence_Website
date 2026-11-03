@@ -38,6 +38,15 @@ export type EventItem = {
 
 export type PollStatus = "open" | "closed" | "archived";
 
+export type SocialHashtag = {
+  id: string;
+  name: string;
+  normalized_name: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+};
+
 export type EventSuggestion = {
   id: string;
   event_id: string;

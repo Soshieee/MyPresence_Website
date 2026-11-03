@@ -248,20 +248,7 @@ export default function VerificationPage() {
           images: postImages,
           imageUrl: null,
           submissionData: null
-        },
-        ...postImages.map((image) => ({
-          id: image.id,
-          category: "social" as const,
-          component: "image" as const,
-          title: `${authorName} — image`,
-          detail: textValue(post.caption, "Attached image"),
-          submittedAt: String(post.created_at),
-          status: image.status,
-          profile: profile ? { ...profile, avatarUrl: authorAvatar } : null,
-          images: [image],
-          imageUrl: image.url,
-          submissionData: null
-        }))
+        }
       ];
     });
 
