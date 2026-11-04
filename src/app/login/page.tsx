@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import AppNotification, { AppNotificationTone } from "@/components/app-notification";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 
 const VERSES = [
@@ -30,10 +31,16 @@ const VERSES = [
 
 export default function LoginPage() {
   const router = useRouter();
+  const [mode, setMode] = useState<"login" | "signup" | "forgot">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [notification, setNotification] = useState<{ tone: AppNotificationTone; message: string } | null>(null);
   // Start from a stable value so server and client render the same verse.
   // The interval below still rotates through the rest.
   const [verseIndex, setVerseIndex] = useState(0);
@@ -65,6 +72,19 @@ export default function LoginPage() {
     return () => window.clearInterval(id);
   }, []);
 
+  const resetFeedback = () => {
+    setError("");
+    setNotification(null);
+  };
+
+  const switchMode = (nextMode: "login" | "signup" | "forgot") => {
+    setMode(nextMode);
+    setPassword("");
+    setConfirmPassword("");
+    setShowPassword(false);
+    resetFeedback();
+  };
+
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
 
@@ -74,7 +94,73 @@ export default function LoginPage() {
     }
 
     setSubmitting(true);
-    setError("");
+    resetFeedback();
+
+    if (mode === "forgot") {
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/auth/reset-password`
+      });
+
+      setSubmitting(false);
+      if (resetError) {
+        setNotification({
+          tone: "success",
+          message: "If an account exists for this email, a password reset link has been sent."
+        });
+        return;
+      }
+
+      setNotification({
+        tone: "success",
+        message: "If an account exists for this email, a password reset link has been sent."
+      });
+      return;
+    }
+
+    if (mode === "signup") {
+      if (!firstName.trim() || !lastName.trim()) {
+        setError("First name and last name are required.");
+        setSubmitting(false);
+        return;
+      }
+      if (password.length < 8) {
+        setError("Password must be at least 8 characters long.");
+        setSubmitting(false);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("Passwords do not match.");
+        setSubmitting(false);
+        return;
+      }
+
+      const response = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          email: email.trim(),
+          password
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      setSubmitting(false);
+
+      if (!response.ok) {
+        setError(typeof result.error === "string" ? result.error : "Registration failed.");
+        return;
+      }
+
+      setNotification({
+        tone: "success",
+        message: "Account created. Check your email to confirm your address. Your Web Admin Account application is awaiting administrator review."
+      });
+      setMode("login");
+      setPassword("");
+      setConfirmPassword("");
+      return;
+    }
 
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email: email.trim(),
@@ -124,17 +210,14 @@ export default function LoginPage() {
           </span>
         </div>
 
-        <div className="relative space-y-6">
-          <p className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#dce9e4] backdrop-blur">
+        <div className="relative flex flex-1 flex-col justify-center space-y-6">
+          <p className="inline-flex self-start items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#dce9e4] backdrop-blur">
             <span className="h-2 w-2 animate-pulse rounded-full bg-[#7ee2b8]" />
             Live attendance system
           </p>
           <h1 className="max-w-md font-[var(--font-heading)] text-5xl leading-[1.05] tracking-tight text-white">
             Know who&apos;s in the room.
           </h1>
-          <p className="max-w-md text-base leading-relaxed text-[#cfdfd8]">
-            Face-scan check-ins, newcomer care, and ministry analytics — built for Sunday services, prayer meetings, and events.
-          </p>
           <figure className="max-w-md rounded-2xl border border-white/15 bg-white/[0.07] p-5 backdrop-blur">
             <blockquote
               key={verseIndex}
@@ -146,55 +229,89 @@ export default function LoginPage() {
               {VERSES[verseIndex].ref}
             </figcaption>
           </figure>
-          <div className="grid max-w-md grid-cols-3 gap-3">
-            {[
-              { step: "01", label: "Gather" },
-              { step: "02", label: "Belong" },
-              { step: "03", label: "Serve" }
-            ].map((item) => (
-              <div key={item.step} className="rounded-2xl border border-white/15 bg-white/[0.07] px-4 py-3 backdrop-blur">
-                <p className="font-[var(--font-heading)] text-lg text-white">{item.step}</p>
-                <p className="mt-1 text-xs font-semibold uppercase tracking-[0.16em] text-[#cfdfd8]">{item.label}</p>
-              </div>
-            ))}
+          <div className="inline-flex max-w-md items-center rounded-full border border-white/15 bg-white/[0.07] px-5 py-3 backdrop-blur">
+            <p className="font-[var(--font-heading)] text-lg tracking-wide text-white">
+              Gather, belong, and serve.
+            </p>
           </div>
         </div>
 
-        <div className="relative flex flex-wrap items-center gap-2">
-          {["Sunday Service", "Prayer Meeting", "Rooftop", "Women's Network", "Men's Network"].map((item) => (
-            <span key={item} className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-[#e6f0ec] backdrop-blur">
-              {item}
-            </span>
-          ))}
-        </div>
       </section>
 
       <section className="flex items-center justify-center bg-[#e9e9e9] px-6 py-10">
         <form onSubmit={onSubmit} className="w-full max-w-md rounded-3xl border border-[#c3d0cb] bg-white/85 p-8 shadow-[0_18px_36px_rgba(56,91,79,0.14)] backdrop-blur">
-          <h2 className="text-center font-[var(--font-heading)] text-3xl text-[#22332d]">Welcome Back</h2>
-          <p className="mt-2 text-center text-sm text-[#5d7269]">Sign in with your admin account to access dashboard pages.</p>
+          <h2 className="text-center font-[var(--font-heading)] text-3xl text-[#22332d]">
+            {mode === "login" ? "Welcome Back" : mode === "signup" ? "Create Account" : "Reset Password"}
+          </h2>
+          <p className="mt-2 text-center text-sm text-[#5d7269]">
+            {mode === "login"
+              ? "Sign in with your admin account to access dashboard pages."
+              : mode === "signup"
+                ? "Create a Web Admin Account application for administrator review."
+                : "Enter your email and we will send a secure reset link if an account exists."}
+          </p>
 
           {!hasSupabaseEnv ? <p className="mt-4 status-error">{supabaseEnvIssue}</p> : null}
           {error ? <p className="mt-4 status-error">{error}</p> : null}
 
           <div className="mt-7 space-y-4">
+            {mode === "signup" ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="field-label" htmlFor="first-name">First Name</label>
+                  <input id="first-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} className="field-input" autoComplete="given-name" required />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="last-name">Last Name</label>
+                  <input id="last-name" value={lastName} onChange={(e) => setLastName(e.target.value)} className="field-input" autoComplete="family-name" required />
+                </div>
+              </div>
+            ) : null}
             <div>
-              <label className="field-label">Email</label>
-              <input value={email} onChange={(e) => setEmail(e.target.value)} className="field-input" type="email" required autoComplete="email" />
+              <label className="field-label" htmlFor="login-email">Email</label>
+              <input id="login-email" value={email} onChange={(e) => setEmail(e.target.value)} className="field-input" type="email" required autoComplete="email" />
             </div>
-            <div>
-              <label className="field-label">Password</label>
-              <input value={password} onChange={(e) => setPassword(e.target.value)} className="field-input" type="password" required autoComplete="current-password" />
-            </div>
+            {mode !== "forgot" ? (
+              <>
+                <div>
+                  <label className="field-label" htmlFor="login-password">Password</label>
+                  <div className="relative">
+                    <input id="login-password" value={password} onChange={(e) => setPassword(e.target.value)} className="field-input pr-20" type={showPassword ? "text" : "password"} required autoComplete={mode === "signup" ? "new-password" : "current-password"} />
+                    <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-[#527064]" onClick={() => setShowPassword((value) => !value)}>
+                      {showPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                </div>
+                {mode === "signup" ? (
+                  <div>
+                    <label className="field-label" htmlFor="confirm-password">Confirm Password</label>
+                    <input id="confirm-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="field-input" type={showPassword ? "text" : "password"} required autoComplete="new-password" />
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </div>
 
           <div className="mt-6 flex flex-col gap-3">
             <button type="submit" className="btn-primary w-full" disabled={submitting || !hasSupabaseEnv}>
-              {submitting ? "Signing in..." : "Enter Dashboard"}
+              {submitting
+                ? mode === "login" ? "Signing in..." : mode === "signup" ? "Creating account..." : "Sending link..."
+                : mode === "login" ? "Enter Dashboard" : mode === "signup" ? "Create Account" : "Send Reset Link"}
             </button>
+            {mode === "login" ? (
+              <div className="flex items-center justify-between text-xs font-semibold text-[#527064]">
+                <button type="button" className="hover:text-[#22332d]" onClick={() => switchMode("signup")}>Create Account</button>
+                <button type="button" className="hover:text-[#22332d]" onClick={() => switchMode("forgot")}>Forgot Password?</button>
+              </div>
+            ) : (
+              <button type="button" className="text-xs font-semibold text-[#527064] hover:text-[#22332d]" onClick={() => switchMode("login")}>
+                Return to Login
+              </button>
+            )}
           </div>
         </form>
       </section>
+      {notification ? <AppNotification tone={notification.tone} message={notification.message} onDismiss={() => setNotification(null)} /> : null}
     </div>
   );
 }

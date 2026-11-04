@@ -307,7 +307,6 @@ export default function RegisterPage() {
     <div className="space-y-6 reveal">
       <section>
         <h1 className="page-title font-[var(--font-heading)]">User Registration</h1>
-        <p className="page-subtitle">Capture a face descriptor and store it with name and ID.</p>
       </section>
 
       <div className="grid gap-6 lg:grid-cols-2">

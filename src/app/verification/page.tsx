@@ -9,6 +9,7 @@ import AppNotification, { AppNotificationTone } from "@/components/app-notificat
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 
 type Status = "pending" | "approved" | "rejected";
+type AccountType = "regular_user" | "web_admin";
 type Category = "all" | "social" | "user" | "profile_picture" | "lifegroup_leader";
 type RequestCategory = Exclude<Category, "all">;
 type ReviewDecision = "approved" | "rejected";
@@ -39,6 +40,7 @@ type VerificationRequest = {
   current_leader_name: string | null;
   rejection_reason: string | null;
   reviewed_at: string | null;
+  account_type?: AccountType;
   submitter_gender: string | null;
   submitter_birthday: string | null;
   submitter_network: string | null;
@@ -87,7 +89,7 @@ type Feedback = {
   message: string;
 } | null;
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 3;
 const SOCIAL_IMAGE_BUCKET = "social-post-images";
 const AVATAR_BUCKET = "avatars";
 
@@ -116,6 +118,10 @@ function statusClass(status: Status) {
 
 function statusLabel(status: Status) {
   return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function accountTypeLabel(accountType: AccountType) {
+  return accountType === "web_admin" ? "Web Admin Account" : "Regular User Account";
 }
 
 function formatDate(value: string | null) {
@@ -150,7 +156,13 @@ async function resolveAvatarUrl(value: string | null) {
 }
 
 function friendlyLoadError(message: string) {
-  if (message.includes("PGRST205") || /relation .*verification_requests.* does not exist/i.test(message)) {
+  if (
+    message.includes("PGRST205") ||
+    message.includes("PGRST202") ||
+    /relation .*verification_requests.* does not exist/i.test(message) ||
+    /relation .*app_user_verification.* does not exist/i.test(message) ||
+    /function .*list_user_verifications_v2.* does not exist/i.test(message)
+  ) {
     return "The verification database update has not been applied. Run the latest verification migrations in the Supabase SQL Editor, then refresh.";
   }
   return message;
@@ -166,11 +178,17 @@ function friendlyReviewError(message: string) {
   if (message.includes("VERIFICATION_REJECTION_REASON_REQUIRED")) {
     return "A rejection reason is required.";
   }
+  if (message.includes("VERIFICATION_EMAIL_NOT_CONFIRMED")) {
+    return "This Web Admin Account must confirm its email before it can be approved.";
+  }
   if (message.includes("VERIFICATION_ADMIN_REQUIRED")) {
     return "Administrator access is required.";
   }
   if (message.includes("VERIFICATION_TARGET_NOT_FOUND")) {
     return "This request no longer exists. Refresh the queue.";
+  }
+  if (message.includes("USER_VERIFICATION_DUPLICATE")) {
+    return "This user has multiple verification records. Resolve the duplicate records before reviewing this request.";
   }
   if (message.includes("VERIFICATION_CATEGORY_INVALID") || message.includes("VERIFICATION_DECISION_INVALID")) {
     return "This review action is not supported.";
@@ -595,6 +613,11 @@ function RequestCard({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={request.overall_status} />
+          {request.category === "user" && request.account_type ? (
+            <span className="rounded-full border border-[#b8c9c2] bg-[#f3f8f5] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#35554a]">
+              {accountTypeLabel(request.account_type)}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -757,6 +780,7 @@ export default function VerificationPage() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [sortAsc, setSortAsc] = useState(false);
+  const [accountType, setAccountType] = useState<AccountType | "all">("all");
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [reviewDialog, setReviewDialog] = useState<ReviewDialogState | null>(null);
@@ -798,24 +822,36 @@ export default function VerificationPage() {
   const loadCounts = useCallback(async () => {
     if (adminState !== "allowed") return;
 
-    const [pendingResult, approvedResult, rejectedResult, totalResult] = await Promise.all([
-      supabase.from("verification_requests").select("*", { count: "exact", head: true }).eq("overall_status", "pending"),
-      supabase.from("verification_requests").select("*", { count: "exact", head: true }).eq("overall_status", "approved"),
-      supabase.from("verification_requests").select("*", { count: "exact", head: true }).eq("overall_status", "rejected"),
-      supabase.from("verification_requests").select("*", { count: "exact", head: true })
+    const [pendingResult, approvedResult, rejectedResult, totalResult, userPendingResult, userApprovedResult, userRejectedResult, userTotalResult] = await Promise.all([
+      supabase.from("verification_requests").select("*", { count: "exact", head: true }).neq("category", "user").eq("overall_status", "pending"),
+      supabase.from("verification_requests").select("*", { count: "exact", head: true }).neq("category", "user").eq("overall_status", "approved"),
+      supabase.from("verification_requests").select("*", { count: "exact", head: true }).neq("category", "user").eq("overall_status", "rejected"),
+      supabase.from("verification_requests").select("*", { count: "exact", head: true }).neq("category", "user"),
+      supabase.rpc("count_user_verifications", { p_status: "pending" }),
+      supabase.rpc("count_user_verifications", { p_status: "approved" }),
+      supabase.rpc("count_user_verifications", { p_status: "rejected" }),
+      supabase.rpc("count_user_verifications", { p_status: null })
     ]);
 
-    const error = pendingResult.error ?? approvedResult.error ?? rejectedResult.error ?? totalResult.error;
+    const error =
+      pendingResult.error ??
+      approvedResult.error ??
+      rejectedResult.error ??
+      totalResult.error ??
+      userPendingResult.error ??
+      userApprovedResult.error ??
+      userRejectedResult.error ??
+      userTotalResult.error;
     if (error) {
       setFeedback({ tone: "error", message: friendlyLoadError(error.message) });
       return;
     }
 
     setCounts({
-      pending: pendingResult.count ?? 0,
-      approved: approvedResult.count ?? 0,
-      rejected: rejectedResult.count ?? 0,
-      total: totalResult.count ?? 0
+      pending: (pendingResult.count ?? 0) + (userPendingResult.data ?? 0),
+      approved: (approvedResult.count ?? 0) + (userApprovedResult.data ?? 0),
+      rejected: (rejectedResult.count ?? 0) + (userRejectedResult.data ?? 0),
+      total: (totalResult.count ?? 0) + (userTotalResult.data ?? 0)
     });
   }, [adminState]);
 
@@ -827,20 +863,33 @@ export default function VerificationPage() {
 
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
-    let query = supabase
-      .from("verification_requests")
-      .select("*", { count: "exact" })
-      .order("submitted_at", { ascending: sortAsc })
-      .range(from, to);
+    const safeSearch = search.replace(/[%,().]/g, " ").replace(/\s+/g, " ").trim();
+    let data: unknown[] | null = null;
+    let error: { message: string } | null = null;
+    let count: number | null = null;
 
-    if (category !== "all") {
-      query = query.eq("category", category);
-    }
-    if (status !== "all") {
-      query = query.eq("overall_status", status);
-    }
-    if (search) {
-      const safeSearch = search.replace(/[%,().]/g, " ").replace(/\s+/g, " ").trim();
+    if (category === "user") {
+      const userResult = await supabase.rpc("list_user_verifications_v2", {
+        p_status: status === "all" ? null : status,
+        p_search: safeSearch || null,
+        p_offset: from,
+        p_limit: PAGE_SIZE,
+        p_sort_asc: sortAsc,
+        p_account_type: accountType === "all" ? null : accountType
+      });
+      data = userResult.data;
+      error = userResult.error;
+      count = userResult.data?.[0]?.total_count ?? 0;
+    } else {
+      let query = supabase
+        .from("verification_requests")
+        .select("*", { count: "exact" })
+        .neq("category", "user")
+        .order("submitted_at", { ascending: sortAsc })
+        .range(from, to);
+
+      if (category !== "all") query = query.eq("category", category);
+      if (status !== "all") query = query.eq("overall_status", status);
       if (safeSearch) {
         query = query.or(
           [
@@ -851,16 +900,85 @@ export default function VerificationPage() {
           ].join(",")
         );
       }
+
+      const result = await query;
+      data = result.data;
+      error = result.error;
+      count = result.count;
     }
 
-    const { data, error, count } = await query;
     if (error) {
+      setRequests([]);
+      setTotal(0);
       setFeedback({ tone: "error", message: friendlyLoadError(error.message) });
       setLoading(false);
       return;
     }
 
-    const rows = (data ?? []) as VerificationRequest[];
+    let rows = (data ?? []) as VerificationRequest[];
+    if (category === "user") {
+      const userRows = (data ?? []) as Array<Record<string, unknown>>;
+      const userIds = userRows.map((row) => String(row.user_id ?? "")).filter(Boolean);
+      const profilesResult = userIds.length
+        ? await supabase.from("profiles").select("id, first_name, last_name, profile_img_url, gender, birthday, network").in("id", userIds)
+        : { data: [], error: null };
+      if (profilesResult.error) {
+        setRequests([]);
+        setTotal(0);
+        setFeedback({ tone: "error", message: friendlyLoadError(profilesResult.error.message) });
+        setLoading(false);
+        return;
+      }
+
+      const profiles = new Map(
+        (profilesResult.data ?? []).map((profile) => [String(profile.id), profile as Record<string, unknown>])
+      );
+      rows = userRows.map((row) => {
+        const userId = String(row.user_id);
+        const profile = profiles.get(userId) ?? {};
+        const firstName = String(row.first_name ?? profile.first_name ?? "").trim();
+        const lastName = String(row.last_name ?? profile.last_name ?? "").trim();
+        const fullName = [firstName, lastName].filter(Boolean).join(" ") || String(row.email ?? "User");
+        const statusValue = row.status === "approved" || row.status === "rejected" ? row.status : "pending";
+        return {
+          request_id: userId,
+          category: "user",
+          component: "submission",
+          user_id: userId,
+          lifegroup_id: null,
+          submitter_name: fullName,
+          submitter_avatar_url: typeof profile.profile_img_url === "string" ? profile.profile_img_url : null,
+          current_profile_img_url: typeof profile.profile_img_url === "string" ? profile.profile_img_url : null,
+          detail: typeof row.email === "string" ? row.email : null,
+          submitted_at: typeof row.submitted_at === "string" ? row.submitted_at : "",
+          status: statusValue,
+          overall_status: statusValue,
+          image_count: 0,
+          pending_image_count: 0,
+          approved_image_count: 0,
+          rejected_image_count: 0,
+          storage_path: null,
+          submission_data: {
+            email: row.email,
+            account_created_at: row.account_created_at,
+            first_name: row.first_name,
+            last_name: row.last_name,
+            gender: profile.gender,
+            birthday: profile.birthday,
+            network: profile.network
+          },
+          lifegroup_name: null,
+          current_leader_id: null,
+          current_leader_name: null,
+          rejection_reason: typeof row.rejection_reason === "string" ? row.rejection_reason : null,
+          reviewed_at: typeof row.reviewed_at === "string" ? row.reviewed_at : null,
+          account_type: row.account_type === "web_admin" ? "web_admin" : "regular_user",
+          submitter_gender: typeof profile.gender === "string" ? profile.gender : null,
+          submitter_birthday: typeof profile.birthday === "string" ? profile.birthday : null,
+          submitter_network: typeof profile.network === "string" ? profile.network : null
+        };
+      });
+    }
     const nextTotal = count ?? 0;
 
     if (!rows.length && page > 0) {
@@ -1000,7 +1118,7 @@ export default function VerificationPage() {
     }
 
     setLoading(false);
-  }, [adminState, category, page, search, sortAsc, status]);
+  }, [accountType, adminState, category, page, search, sortAsc, status]);
 
   useEffect(() => {
     if (adminState !== "allowed") return;
@@ -1017,6 +1135,7 @@ export default function VerificationPage() {
   const changeCategory = (next: Category) => {
     setCategory(next);
     setPage(0);
+    setFeedback(null);
   };
 
   const changeStatus = (next: Status | "all") => {
@@ -1026,6 +1145,11 @@ export default function VerificationPage() {
 
   const changeSort = (nextAsc: boolean) => {
     setSortAsc(nextAsc);
+    setPage(0);
+  };
+
+  const changeAccountType = (next: AccountType | "all") => {
+    setAccountType(next);
     setPage(0);
   };
 
@@ -1075,6 +1199,12 @@ export default function VerificationPage() {
         p_decision: reviewDialog.decision,
         p_comments: comments
       })
+      : reviewDialog.rpcCategory === "user"
+        ? await supabase.rpc("review_user_verification", {
+          p_user_id: reviewDialog.targetId,
+          p_decision: reviewDialog.decision,
+          p_comments: comments
+        })
       : await supabase.rpc("review_verification", {
         p_target_id: reviewDialog.targetId,
         p_category: reviewDialog.rpcCategory,
@@ -1113,11 +1243,6 @@ export default function VerificationPage() {
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#5d7b70]">Administration</p>
           <h1 className="page-title mt-1">Verification Center</h1>
-          <p className="page-subtitle max-w-2xl">
-            Review social feed posts, member verification, profile pictures, and lifegroup leaders. Each category is
-            decided independently; a social post is approved or rejected as a whole, and every decision is recorded in
-            the audit history.
-          </p>
         </div>
         {adminState === "allowed" ? (
           <button type="button" className="btn-ghost" onClick={refresh} disabled={loading}>
@@ -1169,7 +1294,7 @@ export default function VerificationPage() {
               ))}
             </div>
 
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_170px_170px_auto] md:items-end">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_170px_190px_170px_auto] md:items-end">
               <label>
                 <span className="field-label">Search</span>
                 <input
@@ -1180,6 +1305,20 @@ export default function VerificationPage() {
                   placeholder="Search member, caption, lifegroup, or leader"
                 />
               </label>
+              {category === "user" ? (
+                <label>
+                  <span className="field-label">Account type</span>
+                  <select
+                    className="field-input"
+                    value={accountType}
+                    onChange={(event) => changeAccountType(event.target.value as AccountType | "all")}
+                  >
+                    <option value="all">All account types</option>
+                    <option value="web_admin">Web Admin Account</option>
+                    <option value="regular_user">Regular User Account</option>
+                  </select>
+                </label>
+              ) : null}
               <label>
                 <span className="field-label">Status</span>
                 <select
@@ -1212,6 +1351,7 @@ export default function VerificationPage() {
                   setCategory("all");
                   setStatus("pending");
                   setSortAsc(false);
+                  setAccountType("all");
                   setPage(0);
                 }}
               >

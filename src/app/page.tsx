@@ -12,9 +12,10 @@ import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from
 import { isMissingEventTypeColumnError } from "@/lib/attendance";
 import { toLocalDateInput } from "@/lib/date";
 
-type AnalyticsView = "mix" | "eventAttendance" | "funnel";
+type AnalyticsView = "mix" | "eventAttendance" | "newcomerAttendance";
 const MIN_ANALYTICS_DATE = "2026-01-01";
 const DEFAULT_EVENT_POSTER = "/default event poster.jpg";
+const EVENTS_PER_PAGE = 3;
 
 function isMissingUserColumnError(message: string) {
   return /column\s+users\.(age|gender|newcomer)\s+does not exist/i.test(message);
@@ -43,6 +44,7 @@ export default function HomePage() {
   const [calendarImage, setCalendarImage] = useState<CalendarImageRow | null>(null);
   const [status, setStatus] = useState("Loading dashboard analytics...");
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
+  const [eventPage, setEventPage] = useState(0);
 
   const range = useMemo(() => {
     const today = new Date();
@@ -137,7 +139,7 @@ export default function HomePage() {
         .from("events")
         .select("id, title, event_date, location, poster_url, event_type, created_at")
         .order("event_date", { ascending: true })
-        .limit(6);
+        .limit(100);
 
       if (eventsResult.error) {
         if (isMissingEventsTableError(eventsResult.error.message)) {
@@ -147,7 +149,7 @@ export default function HomePage() {
             .from("events")
             .select("id, title, event_date, location, poster_url, created_at")
             .order("event_date", { ascending: true })
-            .limit(6);
+            .limit(100);
 
           if (eventsFallback.error) {
             warnings.push(`Events could not be loaded: ${eventsFallback.error.message}`);
@@ -293,24 +295,9 @@ export default function HomePage() {
     ];
   }, [attendance]);
 
-  const funnelSteps = useMemo(() => {
-    const studentScanCounts = new Map<string, number>();
-
-    for (const scan of attendance) {
-      studentScanCounts.set(scan.student_id, (studentScanCounts.get(scan.student_id) ?? 0) + 1);
-    }
-
-    const scanned = studentScanCounts.size;
-    const returning = Array.from(studentScanCounts.values()).filter((count) => count >= 2).length;
-    const newcomerScanned = attendance.filter((scan) => scan.was_newcomer).length;
-
-    return [
-      { label: "Registered", value: users.length, color: "#334155" },
-      { label: "Scanned (Range)", value: scanned, color: "#2563eb" },
-      { label: "Returning (2+)", value: returning, color: "#10b981" },
-      { label: "Newcomer Scans", value: newcomerScanned, color: "#f59e0b" }
-    ];
-  }, [attendance, users.length]);
+  const totalEventPages = Math.ceil(events.length / EVENTS_PER_PAGE);
+  const safeEventPage = Math.min(eventPage, Math.max(totalEventPages - 1, 0));
+  const visibleEvents = events.slice(safeEventPage * EVENTS_PER_PAGE, (safeEventPage + 1) * EVENTS_PER_PAGE);
 
   return (
     <div className="space-y-8 reveal">
@@ -318,11 +305,23 @@ export default function HomePage() {
         <div className="section-head">
           <div>
             <h1 className="page-title font-[var(--font-heading)]">Home Dashboard</h1>
-            <p className="page-subtitle mt-2">Live analytics and event highlights.</p>
           </div>
-          <Link href="/events-manager" className="btn-primary">
-            Manage Events
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => document.getElementById("monthly-calendar")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="btn-primary"
+            >
+              Jump to Calendar
+            </button>
+            <button
+              type="button"
+              onClick={() => document.getElementById("upcoming-events")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="btn-ghost"
+            >
+              Jump to Upcoming Events
+            </button>
+          </div>
         </div>
         <div className="status-info mt-4">{status}</div>
       </section>
@@ -342,12 +341,12 @@ export default function HomePage() {
         </article>
       </section>
 
-      <div className="grid items-stretch gap-6 lg:grid-cols-[1.3fr_1fr]">
+      <div>
         <section className="flex flex-col space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => setAnalyticsView("mix")} className={analyticsView === "mix" ? "btn-primary" : "btn-ghost"}>Network Attendance</button>
             <button type="button" onClick={() => setAnalyticsView("eventAttendance")} className={analyticsView === "eventAttendance" ? "btn-primary" : "btn-ghost"}>Event Attendance</button>
-            <button type="button" onClick={() => setAnalyticsView("funnel")} className={analyticsView === "funnel" ? "btn-primary" : "btn-ghost"}>Funnel</button>
+            <button type="button" onClick={() => setAnalyticsView("newcomerAttendance")} className={analyticsView === "newcomerAttendance" ? "btn-primary" : "btn-ghost"}>Newcomer Attendance</button>
           </div>
 
           {analyticsView === "mix" ? (
@@ -358,8 +357,18 @@ export default function HomePage() {
             <LineChart title="Attendance by Service and Event" items={eventAttendanceItems} emptyText="No event attendance data yet." />
           ) : null}
 
-          {analyticsView === "funnel" ? (
-            <LineChart title="Attendance Funnel" items={funnelSteps} emptyText="No funnel data yet." />
+          {analyticsView === "newcomerAttendance" ? (
+            <LineChart
+              title="Newcomer Attendance by Network"
+              items={[
+                { label: NETWORK_LABELS.kidsMinistry, value: analytics.newcomerByGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
+                { label: NETWORK_LABELS.youthMinistry, value: analytics.newcomerByGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
+                { label: NETWORK_LABELS.youngProfessionals, value: analytics.newcomerByGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
+                { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
+                { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
+              ]}
+              emptyText="No newcomer scans today."
+            />
           ) : null}
 
           {analyticsView === "eventAttendance" ? (
@@ -398,26 +407,12 @@ export default function HomePage() {
           ) : null}
         </section>
 
-        <div className="flex flex-col space-y-6">
-          <LineChart
-            title="Newcomer Attendance by Network"
-            items={[
-              { label: NETWORK_LABELS.kidsMinistry, value: analytics.newcomerByGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
-              { label: NETWORK_LABELS.youthMinistry, value: analytics.newcomerByGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
-              { label: NETWORK_LABELS.youngProfessionals, value: analytics.newcomerByGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
-              { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
-              { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
-            ]}
-            emptyText="No newcomer scans today."
-          />
-        </div>
       </div>
 
-      <section className="analytics-panel">
+      <section id="monthly-calendar" className="analytics-panel scroll-mt-6">
         <div className="section-head">
           <div>
             <h2 className="font-[var(--font-heading)] text-xl text-[#21312b]">Monthly Calendar</h2>
-            <p className="mt-1 text-xs text-[#5a7268]">The current calendar image published from the Event Manager.</p>
           </div>
           <Link href="/events-manager" className="btn-ghost px-3 py-1 text-xs">
             Manage Calendar
@@ -433,7 +428,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="analytics-panel">
+      <section id="upcoming-events" className="analytics-panel scroll-mt-6">
         <div className="section-head">
           <h2 className="font-[var(--font-heading)] text-xl text-[#21312b]">Upcoming Events</h2>
         </div>
@@ -442,7 +437,7 @@ export default function HomePage() {
         ) : (
           <>
             <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {events.map((event) => (
+            {visibleEvents.map((event) => (
               <article
                 key={event.id}
                 className="rounded-2xl border border-[#bfd0c9] bg-white/80 p-3 shadow-[0_8px_18px_rgba(56,91,79,0.09)]"
@@ -464,6 +459,29 @@ export default function HomePage() {
               </article>
             ))}
             </div>
+            {totalEventPages > 1 ? (
+              <div className="mt-4 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setEventPage(Math.max(safeEventPage - 1, 0))}
+                  className="btn-ghost px-3 py-1 text-xs"
+                  disabled={safeEventPage === 0}
+                >
+                  Previous
+                </button>
+                <span className="text-xs text-[#5a7268]">
+                  Page {safeEventPage + 1} of {totalEventPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setEventPage(Math.min(safeEventPage + 1, totalEventPages - 1))}
+                  className="btn-ghost px-3 py-1 text-xs"
+                  disabled={safeEventPage === totalEventPages - 1}
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
           </>
         )}
       </section>

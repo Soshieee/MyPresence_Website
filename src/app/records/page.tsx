@@ -26,6 +26,7 @@ type EventLookup = {
 };
 const MIN_ANALYTICS_DATE = "2026-01-01";
 const RECORDS_PAGE_SIZE = 25;
+const LIFEGROUP_PANEL_PAGE_SIZE = 5;
 
 type AttendanceGroup =
   | "First Service"
@@ -114,7 +115,7 @@ type LifegroupAttendanceRow = {
 };
 
 type LifegroupReportRow = Record<string, unknown>;
-type LifegroupRangePreset = "30d" | "90d" | "all" | "custom";
+type LifegroupRangePreset = "today" | "7d" | "30d" | "custom";
 
 function rowString(row: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
@@ -283,9 +284,11 @@ export default function AttendanceRecordsPage() {
   const [lifegroupError, setLifegroupError] = useState("");
   const [selectedLifegroupId, setSelectedLifegroupId] = useState<string>("all");
   const [selectedLifegroupMemberId, setSelectedLifegroupMemberId] = useState<string>("all");
-  const [lifegroupRangePreset, setLifegroupRangePreset] = useState<LifegroupRangePreset>("all");
+  const [lifegroupRangePreset, setLifegroupRangePreset] = useState<LifegroupRangePreset>("7d");
   const [lifegroupFromDate, setLifegroupFromDate] = useState("");
   const [lifegroupToDate, setLifegroupToDate] = useState("");
+  const [comparisonPage, setComparisonPage] = useState(0);
+  const [activityPage, setActivityPage] = useState(0);
 
   const range = useMemo(() => {
     const today = new Date();
@@ -325,16 +328,20 @@ export default function AttendanceRecordsPage() {
     const today = new Date();
     const todayKey = toLocalDateInput(today);
 
-    if (lifegroupRangePreset === "30d") {
+    if (lifegroupRangePreset === "today") {
+      return { from: todayKey, to: todayKey };
+    }
+
+    if (lifegroupRangePreset === "7d") {
       const from = new Date(today);
-      from.setDate(from.getDate() - 29);
+      from.setDate(from.getDate() - 6);
       const nextFrom = toLocalDateInput(from);
       return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: todayKey };
     }
 
-    if (lifegroupRangePreset === "90d") {
+    if (lifegroupRangePreset === "30d") {
       const from = new Date(today);
-      from.setDate(from.getDate() - 89);
+      from.setDate(from.getDate() - 29);
       const nextFrom = toLocalDateInput(from);
       return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: todayKey };
     }
@@ -916,8 +923,6 @@ export default function AttendanceRecordsPage() {
     const activitiesInRange = lifegroupActivities.filter((activity) => {
       if (selectedLifegroupId !== "all" && activity.lifegroup_id !== selectedLifegroupId) return false;
       const date = activityDate(activity);
-      // "All time" also includes upcoming scheduled activities.
-      if (lifegroupRangePreset === "all") return Boolean(date);
       return dateInRange(date, lifegroupRange.from, lifegroupRange.to);
     });
     const activityIdsInRange = new Set(activitiesInRange.map((activity) => activity.id));
@@ -1142,7 +1147,6 @@ export default function AttendanceRecordsPage() {
     lifegroupMembers,
     lifegroupRange.from,
     lifegroupRange.to,
-    lifegroupRangePreset,
     lifegroupReportRows,
     lifegroupRsvps,
     lifegroups,
@@ -1152,16 +1156,27 @@ export default function AttendanceRecordsPage() {
   ]);
 
   const selectedLifegroupName = useMemo(
-    () => lifegroups.find((group) => group.id === selectedLifegroupId)?.name ?? "All Lifegroups",
+    () => lifegroups.find((group) => group.id === selectedLifegroupId)?.name ?? "",
     [lifegroups, selectedLifegroupId]
+  );
+  const comparisonPageCount = Math.ceil(lifegroupAnalytics.perGroup.length / LIFEGROUP_PANEL_PAGE_SIZE);
+  const activityPageCount = Math.ceil(lifegroupAnalytics.recentActivities.length / LIFEGROUP_PANEL_PAGE_SIZE);
+  const safeComparisonPage = Math.min(comparisonPage, Math.max(comparisonPageCount - 1, 0));
+  const safeActivityPage = Math.min(activityPage, Math.max(activityPageCount - 1, 0));
+  const visibleComparisonGroups = lifegroupAnalytics.perGroup.slice(
+    safeComparisonPage * LIFEGROUP_PANEL_PAGE_SIZE,
+    (safeComparisonPage + 1) * LIFEGROUP_PANEL_PAGE_SIZE
+  );
+  const visibleRecentActivities = lifegroupAnalytics.recentActivities.slice(
+    safeActivityPage * LIFEGROUP_PANEL_PAGE_SIZE,
+    (safeActivityPage + 1) * LIFEGROUP_PANEL_PAGE_SIZE
   );
 
   return (
     <div className="space-y-6 reveal">
       <section>
         <h1 className="page-title font-[var(--font-heading)]">Records Analytics</h1>
-        <p className="page-subtitle">Explore attendance trends and lifegroup activity using your existing records.</p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap gap-2">
           <button
             type="button"
             className={recordsView === "attendance" ? "btn-primary" : "btn-ghost"}
@@ -1180,42 +1195,33 @@ export default function AttendanceRecordsPage() {
       </section>
 
       {recordsView === "lifegroups" ? (
-        <section className="space-y-6">
+        <section className="space-y-4">
           {lifegroupError ? <div className="status-error">{lifegroupError}</div> : null}
           {lifegroupLoading ? <div className="status-info">Loading lifegroup analytics...</div> : null}
-
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Lifegroups</p>
               <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.totalGroups}</p>
-              <p className="mt-1 text-xs text-[#71847c]">{selectedLifegroupName}</p>
             </article>
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Members</p>
               <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.totalMembers}</p>
-              <p className="mt-1 text-xs text-[#71847c]">{lifegroupAnalytics.membershipCount} memberships</p>
             </article>
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Active Members</p>
               <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.activeMembers}</p>
-              <p className="mt-1 text-xs text-[#71847c]">Active membership records</p>
             </article>
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Inactive / Pending</p>
               <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.inactiveMembers}</p>
-              <p className="mt-1 text-xs text-[#71847c]">Not currently active</p>
             </article>
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Attendance Records</p>
               <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.attendanceCount}</p>
-              <p className="mt-1 text-xs text-[#71847c]">{lifegroupAnalytics.uniqueAttendees} unique attendees</p>
             </article>
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Activities</p>
               <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.activities}</p>
-              <p className="mt-1 text-xs text-[#71847c]">
-                {lifegroupAnalytics.activityStatusCounts.scheduled} scheduled · {lifegroupAnalytics.activityStatusCounts.completed} completed
-              </p>
             </article>
           </section>
 
@@ -1231,7 +1237,6 @@ export default function AttendanceRecordsPage() {
                   setSelectedLifegroupMemberId("all");
                 }}
               >
-                <option value="all">All Lifegroups</option>
                 {lifegroups.map((lifegroup) => (
                   <option key={lifegroup.id} value={lifegroup.id}>{lifegroup.name}</option>
                 ))}
@@ -1251,33 +1256,30 @@ export default function AttendanceRecordsPage() {
                   <option key={member.user_id} value={member.user_id}>{member.name}</option>
                 ))}
               </select>
-              {selectedLifegroupId === "all" ? (
-                <p className="mt-1 text-xs text-[#71847c]">Choose one lifegroup to track a single member.</p>
-              ) : null}
             </div>
             <div>
               <p className="field-label">Date Range</p>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  onClick={() => setLifegroupRangePreset("today")}
+                  className={lifegroupRangePreset === "today" ? "btn-primary" : "btn-ghost"}
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLifegroupRangePreset("7d")}
+                  className={lifegroupRangePreset === "7d" ? "btn-primary" : "btn-ghost"}
+                >
+                  7 Days
+                </button>
+                <button
+                  type="button"
                   onClick={() => setLifegroupRangePreset("30d")}
                   className={lifegroupRangePreset === "30d" ? "btn-primary" : "btn-ghost"}
                 >
-                  Last 30 Days
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLifegroupRangePreset("90d")}
-                  className={lifegroupRangePreset === "90d" ? "btn-primary" : "btn-ghost"}
-                >
-                  Last 90 Days
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLifegroupRangePreset("all")}
-                  className={lifegroupRangePreset === "all" ? "btn-primary" : "btn-ghost"}
-                >
-                  All Time
+                  30 Days
                 </button>
                 <button
                   type="button"
@@ -1308,17 +1310,17 @@ export default function AttendanceRecordsPage() {
                 </div>
               ) : null}
               <p className="mt-2 text-xs text-[#71847c]">
-                {lifegroupRangePreset === "all" ? "All time" : `${lifegroupRange.from} to ${lifegroupRange.to}`}
+                {`${lifegroupRange.from} to ${lifegroupRange.to}`}
               </p>
             </div>
           </section>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-[#5e766c]">
-              Attendance comes from lifegroup_attendance records; RSVPs are shown separately and are never counted as attendance.
-            </p>
             <button type="button" onClick={() => void fetchLifegroupData()} className="btn-primary w-fit" disabled={lifegroupLoading}>
               {lifegroupLoading ? "Refreshing..." : "Refresh Lifegroup Data"}
+            </button>
+            <button type="button" onClick={() => window.print()} className="btn-ghost w-fit">
+              Print/Save PDF
             </button>
           </div>
 
@@ -1365,7 +1367,7 @@ export default function AttendanceRecordsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {lifegroupAnalytics.perGroup.map((group) => (
+                  {visibleComparisonGroups.map((group) => (
                     <tr key={group.id} className="border-b border-[#edf2ef] last:border-0">
                       <td className="px-2 py-3 font-semibold text-[#2f4d43]">{group.name}</td>
                       <td className="px-2 py-3 capitalize text-[#5e766c]">{group.status}</td>
@@ -1386,6 +1388,27 @@ export default function AttendanceRecordsPage() {
                 </tbody>
               </table>
             </div>
+            {comparisonPageCount > 1 ? (
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  onClick={() => setComparisonPage(Math.max(0, safeComparisonPage - 1))}
+                  disabled={safeComparisonPage === 0}
+                >
+                  Previous
+                </button>
+                <span className="text-xs text-[#71847c]">Page {safeComparisonPage + 1} of {comparisonPageCount}</span>
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  onClick={() => setComparisonPage(Math.min(comparisonPageCount - 1, safeComparisonPage + 1))}
+                  disabled={safeComparisonPage === comparisonPageCount - 1}
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
           </section>
 
           {selectedLifegroupId !== "all" ? (
@@ -1437,7 +1460,7 @@ export default function AttendanceRecordsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {lifegroupAnalytics.recentActivities.map((activity) => (
+                  {visibleRecentActivities.map((activity) => (
                     <tr key={activity.id} className="border-b border-[#edf2ef] last:border-0">
                       <td className="px-2 py-3 font-semibold text-[#2f4d43]">{activity.title}</td>
                       <td className="px-2 py-3 text-[#5e766c]">{activity.groupName}</td>
@@ -1459,6 +1482,27 @@ export default function AttendanceRecordsPage() {
                 </tbody>
               </table>
             </div>
+            {activityPageCount > 1 ? (
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  onClick={() => setActivityPage(Math.max(0, safeActivityPage - 1))}
+                  disabled={safeActivityPage === 0}
+                >
+                  Previous
+                </button>
+                <span className="text-xs text-[#71847c]">Page {safeActivityPage + 1} of {activityPageCount}</span>
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  onClick={() => setActivityPage(Math.min(activityPageCount - 1, safeActivityPage + 1))}
+                  disabled={safeActivityPage === activityPageCount - 1}
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
           </section>
         </section>
       ) : null}
@@ -1486,8 +1530,8 @@ export default function AttendanceRecordsPage() {
       <div className="card flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div className="flex flex-wrap items-end gap-2">
           <button type="button" onClick={() => setRangePreset("today")} className={rangePreset === "today" ? "btn-primary" : "btn-ghost"}>Today</button>
-          <button type="button" onClick={() => setRangePreset("7d")} className={rangePreset === "7d" ? "btn-primary" : "btn-ghost"}>Last 7 Days</button>
-          <button type="button" onClick={() => setRangePreset("30d")} className={rangePreset === "30d" ? "btn-primary" : "btn-ghost"}>Last 30 Days</button>
+          <button type="button" onClick={() => setRangePreset("7d")} className={rangePreset === "7d" ? "btn-primary" : "btn-ghost"}>7 Days</button>
+          <button type="button" onClick={() => setRangePreset("30d")} className={rangePreset === "30d" ? "btn-primary" : "btn-ghost"}>30 Days</button>
           <button type="button" onClick={() => setRangePreset("custom")} className={rangePreset === "custom" ? "btn-primary" : "btn-ghost"}>Custom</button>
           {rangePreset === "custom" ? (
             <>
@@ -1627,7 +1671,6 @@ export default function AttendanceRecordsPage() {
           <div>
             <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">Attendance Records</h2>
             <p className="mt-1 text-xs text-[#5e766c]">
-              Each row shows the saved attendance type separately from the linked event type.
             </p>
           </div>
           <p className="text-sm font-semibold text-[#35564a]">{filteredLogs.length} records</p>

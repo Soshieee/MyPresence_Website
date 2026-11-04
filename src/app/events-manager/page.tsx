@@ -630,7 +630,7 @@ export default function EventsManagerPage() {
   const [pollScheduleReady, setPollScheduleReady] = useState(true);
   const [now, setNow] = useState(() => new Date());
   const [submissionSchemaReady, setSubmissionSchemaReady] = useState(true);
-  const [status, setStatus] = useState("Manage events and publish them to the home page.");
+  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EventItem | null>(null);
@@ -2041,7 +2041,6 @@ export default function EventsManagerPage() {
     <div className="space-y-6 reveal">
       <section>
         <h1 className="page-title font-[var(--font-heading)]">Event Manager</h1>
-        <p className="page-subtitle">Add posters, polls, and calendar images. Published events appear on the home dashboard.</p>
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
@@ -2090,16 +2089,12 @@ export default function EventsManagerPage() {
                 <option key={type} value={type}>{type}</option>
               ))}
             </select>
-            <p className="mt-2 text-xs text-[#5e766c]">
-              Used to filter the Linked Event dropdown on the Scan page. Prayer Meeting is an attendance type only; Prayer scans can link General events.
-            </p>
           </div>
 
           <section className="rounded-xl border border-[#cbd8d3] bg-[#f7faf8] p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="font-semibold text-[#2f4d43]">Hashtags</h3>
-                <p className="text-xs text-[#5e766c]">System hashtags and newly created hashtags are available here and in polls.</p>
               </div>
               <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">
                 {hashtags.filter((hashtag) => hashtag.is_default).length} system
@@ -2154,10 +2149,6 @@ export default function EventsManagerPage() {
                   + Add poll
                 </button>
               </div>
-              <p className="text-xs text-[#5e766c]">
-                Optionally schedule when voting opens and closes, then add each poll question and
-                options. App users vote once per active poll.
-              </p>
               {newEventPolls.map((poll, pollIndex) => (
                 <PollDraftEditor
                   key={poll.key}
@@ -2211,7 +2202,7 @@ export default function EventsManagerPage() {
           <div className="status-info">{status}</div>
         </form>
 
-        <section className="card">
+        <section id="recent-events" className="card scroll-mt-6">
           <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">Recent Events</h2>
           <div className="mt-4 space-y-3">
             {events.length === 0 ? (
@@ -2224,6 +2215,9 @@ export default function EventsManagerPage() {
                     setSelectedEventId(item.id);
                     setEditingPoll(null);
                     setAdditionalPolls([]);
+                    window.setTimeout(() => {
+                      document.getElementById("event-details-polls")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }, 0);
                   }}
                   className={`cursor-pointer rounded-xl border p-3 transition-all ${
                     selectedEventId === item.id
@@ -2291,7 +2285,6 @@ export default function EventsManagerPage() {
           <div>
             <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">Calendar Image</h2>
             <p className="mt-1 text-xs text-[#5e766c]">
-              This image is published to the Events page and can be read by the app.
             </p>
           </div>
           {calendarRow?.calendar_img_url ? (
@@ -2360,7 +2353,7 @@ export default function EventsManagerPage() {
         </div>
       </section>
 
-      <section className="analytics-panel">
+      <section id="event-details-polls" className="analytics-panel scroll-mt-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">Event Details and Polls</h2>
           {selectedEvent ? (
@@ -2430,10 +2423,6 @@ export default function EventsManagerPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-[var(--font-heading)] text-lg text-[#23332d]">Polls</h3>
-                  <p className="mt-1 text-xs text-[#5e766c]">
-                    Poll status follows the schedule: Scheduled, Active, or Ended. App users can submit one vote per
-                    poll while it is active.
-                  </p>
                 </div>
                 <button
                   type="button"

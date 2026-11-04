@@ -23,6 +23,8 @@ type MemberRow = {
 };
 
 type MemberStatusFilter = "all" | "active" | "inactive";
+type NetworkFilter = "all" | "youth" | "youngProfessionals" | "mensNetwork" | "womensNetwork";
+const MEMBERS_PAGE_SIZE = 5;
 
 type MemberHistoryRow = {
   id: string;
@@ -54,8 +56,10 @@ export default function MembersPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<MemberStatusFilter>("all");
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState("Manage member records: search, edit, activate/deactivate, delete, and export.");
+  const [, setLoading] = useState(false);
+  const [, setStatus] = useState("");
+  const [networkFilter, setNetworkFilter] = useState<NetworkFilter>("all");
+  const [memberPage, setMemberPage] = useState(0);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
   const [formAge, setFormAge] = useState("");
@@ -175,8 +179,13 @@ export default function MembersPage() {
         statusFilter === "all" ||
         (statusFilter === "active" && isActive) ||
         (statusFilter === "inactive" && !isActive);
-
-      if (!matchesStatus) return false;
+      const matchesNetwork =
+        networkFilter === "all" ||
+        (networkFilter === "youth" && member.age !== null && member.age >= 13 && member.age <= 26) ||
+        (networkFilter === "youngProfessionals" && member.age !== null && member.age >= 27 && member.age <= 45) ||
+        (networkFilter === "mensNetwork" && member.gender === "Male" && member.age !== null && member.age >= 46) ||
+        (networkFilter === "womensNetwork" && member.gender === "Female" && member.age !== null && member.age >= 46);
+      if (!matchesStatus || !matchesNetwork) return false;
       if (!needle) return true;
 
       return (
@@ -184,7 +193,14 @@ export default function MembersPage() {
         member.student_id.toLowerCase().includes(needle)
       );
     });
-  }, [members, query, statusFilter]);
+  }, [members, networkFilter, query, statusFilter]);
+
+  const memberPageCount = Math.ceil(filteredMembers.length / MEMBERS_PAGE_SIZE);
+  const safeMemberPage = Math.min(memberPage, Math.max(memberPageCount - 1, 0));
+  const visibleMembers = filteredMembers.slice(
+    safeMemberPage * MEMBERS_PAGE_SIZE,
+    (safeMemberPage + 1) * MEMBERS_PAGE_SIZE
+  );
 
   const activeCount = useMemo(
     () => members.filter((member) => member.is_active !== false).length,
@@ -444,7 +460,6 @@ export default function MembersPage() {
     <div className="space-y-6 reveal">
       <section>
         <h1 className="page-title font-[var(--font-heading)]">Member Management</h1>
-        <p className="page-subtitle">View, edit, activate or deactivate, delete, export, and inspect attendance history.</p>
       </section>
 
       <section className="analytics-strip">
@@ -473,7 +488,10 @@ export default function MembersPage() {
             <input
               className="field-input"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setMemberPage(0);
+              }}
               placeholder="Search by name or member ID"
             />
           </div>
@@ -508,21 +526,30 @@ export default function MembersPage() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setStatusFilter("all")}
+              onClick={() => {
+                setStatusFilter("all");
+                setMemberPage(0);
+              }}
               className={statusFilter === "all" ? "btn-primary" : "btn-ghost"}
             >
               All Members
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter("active")}
+              onClick={() => {
+                setStatusFilter("active");
+                setMemberPage(0);
+              }}
               className={statusFilter === "active" ? "btn-primary" : "btn-ghost"}
             >
               Active
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter("inactive")}
+              onClick={() => {
+                setStatusFilter("inactive");
+                setMemberPage(0);
+              }}
               className={statusFilter === "inactive" ? "btn-primary" : "btn-ghost"}
             >
               Inactive
@@ -530,7 +557,27 @@ export default function MembersPage() {
           </div>
         </div>
 
-        <div className="status-info mt-4">{loading ? "Loading members..." : status}</div>
+        <div className="mt-4">
+          <div>
+            <label className="field-label" htmlFor="network-filter">Filter by Network</label>
+            <select
+              id="network-filter"
+              className="field-input"
+              value={networkFilter}
+              onChange={(event) => {
+                setNetworkFilter(event.target.value as NetworkFilter);
+                setMemberPage(0);
+              }}
+            >
+              <option value="all">All Networks</option>
+              <option value="youth">Youth (ages 13–26)</option>
+              <option value="youngProfessionals">Young Professionals (ages 27–45)</option>
+              <option value="mensNetwork">Men&apos;s Network (men 46+)</option>
+              <option value="womensNetwork">Women&apos;s Network (women 46+)</option>
+            </select>
+          </div>
+        </div>
+
       </div>
 
       {editingId ? (
@@ -599,11 +646,12 @@ export default function MembersPage() {
         </section>
       ) : null}
 
-      <section className="card overflow-x-auto">
-        {filteredMembers.length === 0 ? (
-          <p className="text-sm text-[#4f675e]">No members found.</p>
-        ) : (
-          <table className="min-w-[860px] border-separate border-spacing-y-2 text-sm">
+      <section className="card min-h-[620px] w-full overflow-x-auto">
+        <div className="min-h-[500px]">
+          {filteredMembers.length === 0 ? (
+            <p className="text-sm text-[#4f675e]">No members found.</p>
+          ) : (
+            <table className="min-w-[860px] w-full border-separate border-spacing-y-2 text-sm">
             <thead>
               <tr className="text-left text-[#4f675e]">
                 <th className="px-3 py-2 font-semibold">
@@ -619,7 +667,7 @@ export default function MembersPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredMembers.map((member) => (
+              {visibleMembers.map((member) => (
                 <tr key={member.id} className="rounded-xl bg-white/85 text-[#30463f] shadow-[0_6px_16px_rgba(56,91,79,0.08)]">
                   <td className="rounded-l-xl px-3 py-2.5">
                     <input type="checkbox" checked={selectedIds.includes(member.id)} onChange={() => toggleSelectMember(member.id)} />
@@ -683,8 +731,32 @@ export default function MembersPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
-        )}
+            </table>
+          )}
+        </div>
+        {memberPageCount > 1 ? (
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              className="btn-ghost px-3 py-1.5 text-xs"
+              onClick={() => setMemberPage(Math.max(0, safeMemberPage - 1))}
+              disabled={safeMemberPage === 0}
+            >
+              Previous
+            </button>
+            <span className="text-xs text-[#5e766c]">
+              Page {safeMemberPage + 1} of {memberPageCount}
+            </span>
+            <button
+              type="button"
+              className="btn-ghost px-3 py-1.5 text-xs"
+              onClick={() => setMemberPage(Math.min(memberPageCount - 1, safeMemberPage + 1))}
+              disabled={safeMemberPage === memberPageCount - 1}
+            >
+              Next
+            </button>
+          </div>
+        ) : null}
       </section>
 
       {notification ? (

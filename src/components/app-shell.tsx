@@ -98,7 +98,7 @@ const navItems: NavItem[] = [
 ];
 
 function titleFromPath(pathname: string) {
-  if (pathname === "/login") return "Login";
+  if (pathname === "/login" || pathname.startsWith("/auth/")) return "Login";
   return "MyPresence";
 }
 
@@ -110,10 +110,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const isPublicAuthRoute = pathname === "/login" || pathname.startsWith("/auth/");
 
   useEffect(() => {
     if (!hasSupabaseEnv) {
-      if (pathname !== "/login") {
+      if (!isPublicAuthRoute) {
         router.replace("/login");
       }
       return;
@@ -133,7 +134,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       if (!authed) setIsAdmin(false);
       setAuthChecked(true);
 
-      if (!authed && pathname !== "/login") {
+      if (!authed && !isPublicAuthRoute) {
         router.replace("/login");
       }
 
@@ -152,7 +153,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       if (!authed) setIsAdmin(false);
       setAuthChecked(true);
 
-      if (!authed && pathname !== "/login") {
+      if (!authed && !isPublicAuthRoute) {
         router.replace("/login");
       }
 
@@ -165,7 +166,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       active = false;
       subscription.unsubscribe();
     };
-  }, [pathname, router]);
+  }, [isPublicAuthRoute, pathname, router]);
 
   useEffect(() => {
     if (!hasSupabaseEnv || !isAuthenticated) return;
@@ -198,7 +199,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     ? navItems
     : navItems.filter((item) => item.href !== "/verification");
 
-  if (pathname === "/login") {
+  if (isPublicAuthRoute) {
     if (!hasSupabaseEnv) {
       return (
         <div className="min-h-screen bg-[#e9e9e9] px-6 py-10">
@@ -260,6 +261,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
+        <button
+          type="button"
+          className="app-rail__item mb-5 shrink-0"
+          title="Jump to Top"
+          aria-label="Jump to Top"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        >
+          <span className="app-rail__glyph">
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="8.5" />
+              <path d="m8.5 12.5 3.5-3.5 3.5 3.5M12 9v6" />
+            </svg>
+          </span>
+        </button>
       </aside>
 
       <div className="md:ml-[88px]">

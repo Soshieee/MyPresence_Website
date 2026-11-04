@@ -744,7 +744,6 @@ export default function AttendancePage() {
     <div className="space-y-6 reveal">
       <section>
         <h1 className="page-title font-[var(--font-heading)]">Attendance Scanning</h1>
-        <p className="page-subtitle">Select the active service/event group, then scan faces in real time.</p>
       </section>
 
       {!hasSupabaseEnv ? (
@@ -781,9 +780,6 @@ export default function AttendancePage() {
               onChange={(event) => setSelectedDate(event.target.value)}
             />
           </div>
-          <button type="button" className="btn-ghost w-fit" onClick={() => setSelectedDate(getTodayIsoDate())}>
-            Use Today
-          </button>
         </div>
 
         <div className="flex items-center justify-between gap-3">
@@ -793,19 +789,17 @@ export default function AttendancePage() {
           </span>
         </div>
 
-        <div>
-          <div className="flex flex-wrap gap-2">
-            {ATTENDANCE_TYPES.map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => handleContextChange(option)}
-                className={selectedContext === option ? "btn-primary" : "btn-ghost"}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
+        <div className="-mt-2 flex flex-wrap gap-2">
+          {ATTENDANCE_TYPES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => handleContextChange(option)}
+              className={selectedContext === option ? "btn-primary" : "btn-ghost"}
+            >
+              {option}
+            </button>
+          ))}
         </div>
 
         {selectedContext === "Sunday Service" ? (
@@ -850,11 +844,11 @@ export default function AttendancePage() {
               </option>
             ))}
           </select>
-          <p className="mt-2 text-xs text-[#5f756c]">
-            {selectedContext
-              ? `Showing ${compatibleEventTypes(selectedContext).join(" / ")} events. You can scan without selecting one.`
-              : "Choose an attendance type to see compatible events. The field is optional."}
-          </p>
+          {selectedContext ? (
+            <p className="mt-2 text-xs text-[#5f756c]">
+              Showing {compatibleEventTypes(selectedContext).join(" / ")} events. You can scan without selecting one.
+            </p>
+          ) : null}
           {selectedContext && compatibleEvents.length === 0 ? (
             <p className="mt-1 text-xs font-semibold text-[#35584c]">
               No compatible events yet — attendance can still be recorded.
@@ -862,10 +856,6 @@ export default function AttendancePage() {
           ) : null}
         </div>
 
-        <p className="text-xs text-[#4f675e]">
-          Auto-save is active. Keep one clear face in frame and attendance will be saved automatically. Active and
-          inactive members can be scanned; scanning does not change the member&apos;s account status.
-        </p>
       </section>
 
       <section className="analytics-strip">
@@ -928,9 +918,6 @@ export default function AttendancePage() {
               <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#35584c]">Processing attendance...</p>
             ) : null}
             <div className={statusClass}>{statusMessage}</div>
-            <p className="text-xs text-[#5f756c]">
-              Distance threshold: {FACE_DISTANCE_THRESHOLD} • Stable frames: {MATCH_CONFIRMATION_FRAMES}
-            </p>
           </div>
 
           <div className="card space-y-2">
