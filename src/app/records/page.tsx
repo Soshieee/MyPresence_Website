@@ -55,12 +55,194 @@ type LinkedEvent = {
 type Lifegroup = {
   id: string;
   name: string;
+  description?: string | null;
+  leader_id?: string | null;
+  status?: string | null;
 };
 
-type LifegroupMemberLink = {
+type LifegroupMemberRow = {
+  id?: string;
   lifegroup_id: string;
   user_id: string;
+  role?: string | null;
+  status?: string | null;
+  joined_at?: string | null;
+  created_at?: string | null;
+  [key: string]: unknown;
 };
+
+type ProfileRow = {
+  id: string;
+  first_name?: string | null;
+  last_name?: string | null;
+};
+
+type LifegroupActivityRow = {
+  id: string;
+  lifegroup_id: string;
+  title?: string | null;
+  description?: string | null;
+  location?: string | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+};
+
+type LifegroupRsvpRow = {
+  id?: string;
+  activity_id: string;
+  user_id: string;
+  response?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  [key: string]: unknown;
+};
+
+type LifegroupAttendanceRow = {
+  id?: string;
+  activity_id?: string | null;
+  lifegroup_id?: string | null;
+  user_id: string;
+  status?: string | null;
+  attended_at?: string | null;
+  checked_in_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  [key: string]: unknown;
+};
+
+type LifegroupReportRow = Record<string, unknown>;
+type LifegroupRangePreset = "30d" | "90d" | "all" | "custom";
+
+function rowString(row: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function rowBoolean(row: Record<string, unknown>, keys: string[]): boolean | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "t", "yes", "y", "1", "present", "attended", "checked_in"].includes(normalized)) return true;
+      if (["false", "f", "no", "n", "0", "absent", "missed", "not_present"].includes(normalized)) return false;
+    }
+  }
+  return null;
+}
+
+function rowNumber(row: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function dateKey(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return toLocalDateInput(parsed);
+}
+
+function activityDate(activity: LifegroupActivityRow | undefined): string | null {
+  if (!activity) return null;
+  return dateKey(rowString(activity, ["starts_at", "activity_date", "date", "created_at"]));
+}
+
+function attendanceDate(
+  row: LifegroupAttendanceRow,
+  activityById: Map<string, LifegroupActivityRow>
+): string | null {
+  const direct = dateKey(
+    rowString(row, ["attended_at", "checked_in_at", "attendance_date", "date", "recorded_at", "created_at"])
+  );
+  if (direct) return direct;
+  const activity = row.activity_id ? activityById.get(row.activity_id) : undefined;
+  return activityDate(activity);
+}
+
+function isPresentAttendance(row: LifegroupAttendanceRow) {
+  const status = rowString(row, ["status", "attendance_status", "state"])?.toLowerCase() ?? "";
+  if (status) {
+    if (
+      [
+        "absent",
+        "not_present",
+        "no_show",
+        "noshow",
+        "missed",
+        "declined",
+        "cancelled",
+        "canceled",
+        "excused",
+        "pending",
+        "registered",
+        "invited",
+        "waitlist",
+        "maybe",
+        "unknown"
+      ].includes(
+        status
+      )
+    ) {
+      return false;
+    }
+    if (
+      ["present", "attended", "checked_in", "checkedin", "late", "here", "yes", "true", "1", "completed", "complete"].includes(
+        status
+      )
+    ) {
+      return true;
+    }
+  }
+
+  const flag = rowBoolean(row, ["present", "attended", "is_present", "checked_in"]);
+  if (flag !== null) return flag;
+
+  // A row in lifegroup_attendance is an attendance record even when the
+  // deployment does not store an explicit present/absent flag.
+  return true;
+}
+
+function isActiveMembership(row: LifegroupMemberRow) {
+  const status = (row.status ?? "").trim().toLowerCase();
+  if (!status) return true;
+  return status === "active" || status === "approved";
+}
+
+function normalizeRsvpResponse(value: string | null): "yes" | "no" | "maybe" | "other" {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (["yes", "y", "going", "attend", "attending", "accepted"].includes(normalized)) return "yes";
+  if (["no", "n", "not_going", "declined", "cannot_attend", "not attending"].includes(normalized)) return "no";
+  if (["maybe", "tentative", "undecided"].includes(normalized)) return "maybe";
+  return "other";
+}
+
+function dateInRange(value: string | null, from: string, to: string) {
+  return Boolean(value && value >= from && value <= to);
+}
+
+function displayProfileName(profile: ProfileRow | undefined) {
+  const name = [profile?.first_name, profile?.last_name]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(" ")
+    .trim();
+  return name || "Name unavailable";
+}
 
 function normalizeAttendanceGroup(label: string | null): AttendanceGroup | null {
   if (label === "Male") return "Men's Network";
@@ -90,10 +272,20 @@ export default function AttendanceRecordsPage() {
   const [page, setPage] = useState(1);
   const [recordsView, setRecordsView] = useState<RecordsView>("attendance");
   const [lifegroups, setLifegroups] = useState<Lifegroup[]>([]);
-  const [lifegroupMemberLinks, setLifegroupMemberLinks] = useState<LifegroupMemberLink[]>([]);
+  const [lifegroupMembers, setLifegroupMembers] = useState<LifegroupMemberRow[]>([]);
+  const [profiles, setProfiles] = useState<ProfileRow[]>([]);
+  const [lifegroupActivities, setLifegroupActivities] = useState<LifegroupActivityRow[]>([]);
+  const [lifegroupRsvps, setLifegroupRsvps] = useState<LifegroupRsvpRow[]>([]);
+  const [lifegroupAttendance, setLifegroupAttendance] = useState<LifegroupAttendanceRow[]>([]);
+  const [lifegroupReportRows, setLifegroupReportRows] = useState<LifegroupReportRow[]>([]);
+  const [lifegroupReportNote, setLifegroupReportNote] = useState("");
+  const [lifegroupLoading, setLifegroupLoading] = useState(false);
   const [lifegroupError, setLifegroupError] = useState("");
   const [selectedLifegroupId, setSelectedLifegroupId] = useState<string>("all");
   const [selectedLifegroupMemberId, setSelectedLifegroupMemberId] = useState<string>("all");
+  const [lifegroupRangePreset, setLifegroupRangePreset] = useState<LifegroupRangePreset>("all");
+  const [lifegroupFromDate, setLifegroupFromDate] = useState("");
+  const [lifegroupToDate, setLifegroupToDate] = useState("");
 
   const range = useMemo(() => {
     const today = new Date();
@@ -129,6 +321,106 @@ export default function AttendanceRecordsPage() {
     };
   }, [fromDate, rangePreset, toDate]);
 
+  const lifegroupRange = useMemo(() => {
+    const today = new Date();
+    const todayKey = toLocalDateInput(today);
+
+    if (lifegroupRangePreset === "30d") {
+      const from = new Date(today);
+      from.setDate(from.getDate() - 29);
+      const nextFrom = toLocalDateInput(from);
+      return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: todayKey };
+    }
+
+    if (lifegroupRangePreset === "90d") {
+      const from = new Date(today);
+      from.setDate(from.getDate() - 89);
+      const nextFrom = toLocalDateInput(from);
+      return { from: nextFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : nextFrom, to: todayKey };
+    }
+
+    if (lifegroupRangePreset === "custom") {
+      const rawFrom = lifegroupFromDate || MIN_ANALYTICS_DATE;
+      const rawTo = lifegroupToDate || todayKey;
+      return {
+        from: rawFrom < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : rawFrom,
+        to: rawTo < MIN_ANALYTICS_DATE ? MIN_ANALYTICS_DATE : rawTo
+      };
+    }
+
+    return { from: MIN_ANALYTICS_DATE, to: todayKey };
+  }, [lifegroupFromDate, lifegroupRangePreset, lifegroupToDate]);
+
+  const fetchLifegroupData = useCallback(async () => {
+    if (!hasSupabaseEnv) {
+      setLifegroupError(supabaseEnvIssue ?? "Missing Supabase env values. Update .env.local and restart dev server.");
+      setLifegroupLoading(false);
+      return;
+    }
+
+    setLifegroupLoading(true);
+    setLifegroupError("");
+
+    const [groupsResult, membersResult, profilesResult, activitiesResult, rsvpsResult, attendanceResult, reportResult] =
+      await Promise.all([
+        supabase.from("lifegroups").select("*").order("name", { ascending: true }),
+        supabase.from("lifegroup_members").select("*"),
+        supabase.from("profiles").select("id, first_name, last_name"),
+        supabase.from("lifegroup_activities").select("*").order("starts_at", { ascending: true }),
+        supabase.from("lifegroup_activity_rsvps").select("*"),
+        supabase.from("lifegroup_attendance").select("*"),
+        supabase.from("lifegroup_attendance_report").select("*").limit(5000)
+      ]);
+
+    const primaryErrors = [
+      groupsResult.error,
+      membersResult.error,
+      profilesResult.error,
+      activitiesResult.error,
+      rsvpsResult.error,
+      attendanceResult.error
+    ].filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    if (groupsResult.error) setLifegroups([]);
+    else setLifegroups((groupsResult.data ?? []) as Lifegroup[]);
+
+    if (membersResult.error) setLifegroupMembers([]);
+    else setLifegroupMembers((membersResult.data ?? []) as LifegroupMemberRow[]);
+
+    if (profilesResult.error) setProfiles([]);
+    else setProfiles((profilesResult.data ?? []) as ProfileRow[]);
+
+    if (activitiesResult.error) setLifegroupActivities([]);
+    else setLifegroupActivities((activitiesResult.data ?? []) as LifegroupActivityRow[]);
+
+    if (rsvpsResult.error) setLifegroupRsvps([]);
+    else setLifegroupRsvps((rsvpsResult.data ?? []) as LifegroupRsvpRow[]);
+
+    if (attendanceResult.error) setLifegroupAttendance([]);
+    else setLifegroupAttendance((attendanceResult.data ?? []) as LifegroupAttendanceRow[]);
+
+    if (reportResult.error) {
+      setLifegroupReportRows([]);
+      setLifegroupReportNote(
+        `The attendance report view could not be loaded (${reportResult.error.message}). Base attendance records are still used.`
+      );
+    } else {
+      setLifegroupReportRows((reportResult.data ?? []) as LifegroupReportRow[]);
+      setLifegroupReportNote("");
+    }
+
+    setLifegroupError(
+      primaryErrors.length
+        ? Array.from(new Set(primaryErrors.map((item) => item.message))).join(" ")
+        : ""
+    );
+    setLifegroupLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void fetchLifegroupData();
+  }, [fetchLifegroupData]);
+
   const formatDateMMDDYY = useCallback((value: string) => {
     const date = new Date(`${value}T00:00:00`);
     const mm = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -159,22 +451,6 @@ export default function AttendanceRecordsPage() {
       const usersResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
       if (!usersResult.error) {
         setUsers((usersResult.data ?? []) as UserFace[]);
-      }
-
-      const [lifegroupsResult, memberLinksResult] = await Promise.all([
-        supabase.from("lifegroups").select("id, name").order("name", { ascending: true }),
-        supabase.from("lifegroup_members").select("lifegroup_id, user_id")
-      ]);
-      if (lifegroupsResult.error || memberLinksResult.error) {
-        setLifegroupError(
-          lifegroupsResult.error?.message ??
-          memberLinksResult.error?.message ??
-          "Lifegroup data could not be loaded."
-        );
-      } else {
-        setLifegroups((lifegroupsResult.data ?? []) as Lifegroup[]);
-        setLifegroupMemberLinks((memberLinksResult.data ?? []) as LifegroupMemberLink[]);
-        setLifegroupError("");
       }
 
       const eventsResult = await supabase
@@ -604,57 +880,281 @@ export default function AttendanceRecordsPage() {
   }, [filteredLogs, userNetworkMap, userProfileMap]);
 
   const lifegroupAnalytics = useMemo(() => {
-    const userById = new Map(users.map((user) => [user.id, user]));
-    const memberStudentIds = new Map<string, string[]>();
+    const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const groupById = new Map(lifegroups.map((group) => [group.id, group]));
+    const activityById = new Map(lifegroupActivities.map((activity) => [activity.id, activity]));
 
-    for (const link of lifegroupMemberLinks) {
-      const user = userById.get(link.user_id);
-      const studentId = user?.student_id ?? (users.some((item) => item.student_id === link.user_id) ? link.user_id : null);
-      if (!studentId) continue;
-      const current = memberStudentIds.get(link.lifegroup_id) ?? [];
-      if (!current.includes(studentId)) current.push(studentId);
-      memberStudentIds.set(link.lifegroup_id, current);
+    const membershipsByGroup = new Map<string, LifegroupMemberRow[]>();
+    const seenMemberships = new Set<string>();
+    for (const row of lifegroupMembers) {
+      const key = `${row.lifegroup_id}|${row.user_id}`;
+      if (seenMemberships.has(key)) continue;
+      seenMemberships.add(key);
+      const current = membershipsByGroup.get(row.lifegroup_id) ?? [];
+      current.push(row);
+      membershipsByGroup.set(row.lifegroup_id, current);
     }
 
-    const selectedMemberIds = selectedLifegroupId === "all"
-      ? new Set(Array.from(memberStudentIds.values()).flat())
-      : new Set(memberStudentIds.get(selectedLifegroupId) ?? []);
-    const scopedLogs = filteredLogs.filter((log) => {
-      if (!selectedMemberIds.has(log.student_id)) return false;
-      return selectedLifegroupMemberId === "all" || log.student_id === selectedLifegroupMemberId;
-    });
+    const scopedGroups =
+      selectedLifegroupId === "all"
+        ? lifegroups
+        : lifegroups.filter((group) => group.id === selectedLifegroupId);
 
-    const totals = lifegroups.map((lifegroup, index) => ({
-      label: lifegroup.name,
-      value: (memberStudentIds.get(lifegroup.id) ?? []).reduce(
-        (total, studentId) => total + filteredLogs.filter((log) => log.student_id === studentId).length,
-        0
-      ),
-      color: GROUP_COLORS[Object.keys(GROUP_COLORS)[index % Object.keys(GROUP_COLORS).length] as keyof typeof GROUP_COLORS] ?? "#0f766e"
-    }));
+    const memberIds = new Set<string>();
+    const activeMemberIds = new Set<string>();
+    let membershipCount = 0;
+    for (const group of scopedGroups) {
+      const rows = membershipsByGroup.get(group.id) ?? [];
+      membershipCount += rows.length;
+      for (const row of rows) {
+        memberIds.add(row.user_id);
+        if (isActiveMembership(row)) activeMemberIds.add(row.user_id);
+      }
+    }
+    const inactiveMemberIds = new Set(Array.from(memberIds).filter((id) => !activeMemberIds.has(id)));
+
+    const activitiesInRange = lifegroupActivities.filter((activity) => {
+      if (selectedLifegroupId !== "all" && activity.lifegroup_id !== selectedLifegroupId) return false;
+      const date = activityDate(activity);
+      // "All time" also includes upcoming scheduled activities.
+      if (lifegroupRangePreset === "all") return Boolean(date);
+      return dateInRange(date, lifegroupRange.from, lifegroupRange.to);
+    });
+    const activityIdsInRange = new Set(activitiesInRange.map((activity) => activity.id));
+
+    const rsvpByKey = new Map<string, LifegroupRsvpRow>();
+    for (const row of lifegroupRsvps) {
+      if (!activityIdsInRange.has(row.activity_id)) continue;
+      if (selectedLifegroupMemberId !== "all" && row.user_id !== selectedLifegroupMemberId) continue;
+      const key = `${row.activity_id}|${row.user_id}`;
+      const existing = rsvpByKey.get(key);
+      const rowTime = row.updated_at ?? row.created_at ?? "";
+      const existingTime = existing?.updated_at ?? existing?.created_at ?? "";
+      if (!existing || rowTime >= existingTime) rsvpByKey.set(key, row);
+    }
+    const rsvpRows = Array.from(rsvpByKey.values());
+    const rsvpCounts = { yes: 0, no: 0, maybe: 0, other: 0 };
+    for (const row of rsvpRows) rsvpCounts[normalizeRsvpResponse(row.response ?? null)] += 1;
+
+    type ProcessedAttendance = {
+      lifegroupId: string;
+      activityId: string | null;
+      date: string | null;
+      present: boolean;
+      userId: string;
+    };
+
+    const attendanceByKey = new Map<string, ProcessedAttendance>();
+    for (const row of lifegroupAttendance) {
+      const activity = row.activity_id ? activityById.get(row.activity_id) : undefined;
+      const lifegroupId = row.lifegroup_id ?? activity?.lifegroup_id ?? null;
+      if (!lifegroupId) continue;
+      if (selectedLifegroupId !== "all" && lifegroupId !== selectedLifegroupId) continue;
+      if (selectedLifegroupMemberId !== "all" && row.user_id !== selectedLifegroupMemberId) continue;
+
+      const date = attendanceDate(row, activityById);
+      if (!dateInRange(date, lifegroupRange.from, lifegroupRange.to)) continue;
+
+      const key = row.activity_id
+        ? `${row.activity_id}|${row.user_id}`
+        : `${lifegroupId}|${row.user_id}|${date ?? row.id ?? "unknown"}`;
+      const present = isPresentAttendance(row);
+      const existing = attendanceByKey.get(key);
+
+      if (!existing) {
+        attendanceByKey.set(key, {
+          lifegroupId,
+          activityId: row.activity_id ?? null,
+          date,
+          present,
+          userId: row.user_id
+        });
+      } else if (present && !existing.present) {
+        attendanceByKey.set(key, { ...existing, present: true });
+      }
+    }
+
+    const attendanceRows = Array.from(attendanceByKey.values());
+    const presentRows = attendanceRows.filter((row) => row.present);
+    const absentRows = attendanceRows.filter((row) => !row.present);
+    const uniqueAttendeeIds = new Set(presentRows.map((row) => row.userId));
 
     const daily = new Map<string, number>();
-    for (const log of scopedLogs) daily.set(log.attended_date, (daily.get(log.attended_date) ?? 0) + 1);
+    for (const row of presentRows) {
+      if (!row.date) continue;
+      daily.set(row.date, (daily.get(row.date) ?? 0) + 1);
+    }
     const trend = Array.from(daily.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-10)
+      .slice(-14)
       .map(([date, value]) => ({ label: formatDateMMDDYY(date), value }));
 
-    const members = (memberStudentIds.get(selectedLifegroupId) ?? [])
-      .map((studentId) => userById.get(studentId) ?? users.find((user) => user.student_id === studentId))
-      .filter((user): user is UserFace => Boolean(user))
-      .sort((a, b) => a.full_name.localeCompare(b.full_name));
+    const activityStatusCounts = { scheduled: 0, completed: 0, cancelled: 0, other: 0 };
+    for (const activity of activitiesInRange) {
+      const status = (activity.status ?? "").trim().toLowerCase();
+      if (status === "scheduled") activityStatusCounts.scheduled += 1;
+      else if (status === "completed" || status === "complete") activityStatusCounts.completed += 1;
+      else if (status === "cancelled" || status === "canceled") activityStatusCounts.cancelled += 1;
+      else activityStatusCounts.other += 1;
+    }
 
-    return { totals, trend, members, scopedCount: scopedLogs.length };
+    // The reporting view is optional: when it exposes activity/group totals,
+    // use those numbers for the report tables; otherwise fall back to the
+    // deduplicated base attendance records.
+    const reportAttendanceByActivity = new Map<string, number>();
+    const reportAttendanceByGroup = new Map<string, number>();
+    for (const row of lifegroupReportRows) {
+      const activityId = rowString(row, ["activity_id", "lifegroup_activity_id"]);
+      const groupId = rowString(row, ["lifegroup_id", "group_id"]);
+      const value = rowNumber(row, [
+        "present_count",
+        "attended_count",
+        "attendance_count",
+        "total_present",
+        "present",
+        "total_attendance",
+        "count"
+      ]);
+      if (value === null) continue;
+      if (activityId) {
+        reportAttendanceByActivity.set(activityId, (reportAttendanceByActivity.get(activityId) ?? 0) + value);
+      }
+      if (groupId) {
+        reportAttendanceByGroup.set(groupId, (reportAttendanceByGroup.get(groupId) ?? 0) + value);
+      }
+    }
+
+    const colorKeys = Object.keys(GROUP_COLORS) as Array<keyof typeof GROUP_COLORS>;
+    const perGroup = scopedGroups.map((group, index) => {
+      const groupMembers = membershipsByGroup.get(group.id) ?? [];
+      const groupMemberIds = new Set(groupMembers.map((row) => row.user_id));
+      const groupActiveIds = new Set(groupMembers.filter(isActiveMembership).map((row) => row.user_id));
+      const groupActivities = activitiesInRange.filter((activity) => activity.lifegroup_id === group.id);
+      const groupActivityIds = new Set(groupActivities.map((activity) => activity.id));
+      const groupPresent = presentRows.filter((row) => row.lifegroupId === group.id);
+      const groupAbsent = absentRows.filter((row) => row.lifegroupId === group.id);
+      const groupRsvps = rsvpRows.filter((row) => groupActivityIds.has(row.activity_id));
+      const groupUniqueAttendees = new Set(groupPresent.map((row) => row.userId));
+      const baseAttendance = groupPresent.length;
+
+      return {
+        id: group.id,
+        name: group.name,
+        status: group.status ?? "active",
+        leaderName: group.leader_id
+          ? displayProfileName(profileById.get(group.leader_id))
+          : "Unassigned",
+        members: groupMemberIds.size,
+        activeMembers: groupActiveIds.size,
+        activities: groupActivities.length,
+        attendance: baseAttendance,
+        reportAttendance: reportAttendanceByGroup.get(group.id) ?? null,
+        absent: groupAbsent.length,
+        uniqueAttendees: groupUniqueAttendees.size,
+        rsvps: groupRsvps.length,
+        yes: groupRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "yes").length,
+        no: groupRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "no").length,
+        maybe: groupRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "maybe").length,
+        avgAttendancePerActivity: groupActivities.length ? baseAttendance / groupActivities.length : 0,
+        color: GROUP_COLORS[colorKeys[index % colorKeys.length]] ?? "#0f766e"
+      };
+    });
+
+    const attendanceByGroup = perGroup.map((group) => ({
+      label: group.name,
+      value: group.attendance,
+      color: group.color
+    }));
+    const membersByGroup = perGroup.map((group) => ({
+      label: group.name,
+      value: group.members,
+      color: group.color
+    }));
+    const rsvpBreakdown = [
+      { label: "Yes", value: rsvpCounts.yes, color: "#0f766e" },
+      { label: "No", value: rsvpCounts.no, color: "#e11d48" },
+      { label: "Maybe", value: rsvpCounts.maybe, color: "#f59e0b" },
+      { label: "Other", value: rsvpCounts.other, color: "#64748b" }
+    ];
+
+    const members = (selectedLifegroupId === "all" ? [] : membershipsByGroup.get(selectedLifegroupId) ?? [])
+      .map((row) => {
+        return {
+          user_id: row.user_id,
+          name: displayProfileName(profileById.get(row.user_id)),
+          status: row.status ?? "unknown",
+          role: row.role ?? "member"
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const recentActivities = activitiesInRange
+      .map((activity) => {
+        const group = groupById.get(activity.lifegroup_id);
+        const activityAttendance = presentRows.filter((row) => row.activityId === activity.id);
+        const baseCount = activityAttendance.length;
+        const reportCount = reportAttendanceByActivity.get(activity.id);
+        const activityRsvps = rsvpRows.filter((row) => row.activity_id === activity.id);
+        return {
+          id: activity.id,
+          title: activity.title?.trim() || "Untitled activity",
+          groupName: group?.name ?? "Unknown lifegroup",
+          date: activityDate(activity),
+          status: activity.status ?? "unknown",
+          attendance: reportCount ?? baseCount,
+          uniqueAttendees: new Set(activityAttendance.map((row) => row.userId)).size,
+          rsvps: activityRsvps.length,
+          yes: activityRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "yes").length,
+          no: activityRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "no").length,
+          maybe: activityRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "maybe").length
+        };
+      })
+      .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || a.title.localeCompare(b.title))
+      .slice(0, 20);
+
+    return {
+      scopedGroups,
+      totalGroups: scopedGroups.length,
+      totalMembers: memberIds.size,
+      activeMembers: activeMemberIds.size,
+      inactiveMembers: inactiveMemberIds.size,
+      membershipCount,
+      activities: activitiesInRange.length,
+      activityStatusCounts,
+      attendanceCount: presentRows.length,
+      absentCount: absentRows.length,
+      uniqueAttendees: uniqueAttendeeIds.size,
+      rsvpCount: rsvpRows.length,
+      rsvpCounts,
+      trend,
+      attendanceByGroup,
+      membersByGroup,
+      rsvpBreakdown,
+      perGroup,
+      members,
+      recentActivities,
+      reportAttendanceAvailable: reportAttendanceByActivity.size > 0 || reportAttendanceByGroup.size > 0
+    };
   }, [
-    filteredLogs,
     formatDateMMDDYY,
-    lifegroupMemberLinks,
+    lifegroupActivities,
+    lifegroupAttendance,
+    lifegroupMembers,
+    lifegroupRange.from,
+    lifegroupRange.to,
+    lifegroupRangePreset,
+    lifegroupReportRows,
+    lifegroupRsvps,
     lifegroups,
     selectedLifegroupId,
     selectedLifegroupMemberId,
-    users
+    profiles
   ]);
+
+  const selectedLifegroupName = useMemo(
+    () => lifegroups.find((group) => group.id === selectedLifegroupId)?.name ?? "All Lifegroups",
+    [lifegroups, selectedLifegroupId]
+  );
 
   return (
     <div className="space-y-6 reveal">
@@ -682,22 +1182,44 @@ export default function AttendanceRecordsPage() {
       {recordsView === "lifegroups" ? (
         <section className="space-y-6">
           {lifegroupError ? <div className="status-error">{lifegroupError}</div> : null}
-          <section className="analytics-strip">
+          {lifegroupLoading ? <div className="status-info">Loading lifegroup analytics...</div> : null}
+
+          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <article className="analytics-card">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Lifegroups</p>
-              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroups.length}</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.totalGroups}</p>
+              <p className="mt-1 text-xs text-[#71847c]">{selectedLifegroupName}</p>
             </article>
             <article className="analytics-card">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Tracked Activity</p>
-              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.scopedCount}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Members</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.totalMembers}</p>
+              <p className="mt-1 text-xs text-[#71847c]">{lifegroupAnalytics.membershipCount} memberships</p>
             </article>
             <article className="analytics-card">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Date Range</p>
-              <p className="mt-2 text-sm font-semibold text-[#22322d]">{range.from} to {range.to}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Active Members</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.activeMembers}</p>
+              <p className="mt-1 text-xs text-[#71847c]">Active membership records</p>
+            </article>
+            <article className="analytics-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Inactive / Pending</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.inactiveMembers}</p>
+              <p className="mt-1 text-xs text-[#71847c]">Not currently active</p>
+            </article>
+            <article className="analytics-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Attendance Records</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.attendanceCount}</p>
+              <p className="mt-1 text-xs text-[#71847c]">{lifegroupAnalytics.uniqueAttendees} unique attendees</p>
+            </article>
+            <article className="analytics-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Activities</p>
+              <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{lifegroupAnalytics.activities}</p>
+              <p className="mt-1 text-xs text-[#71847c]">
+                {lifegroupAnalytics.activityStatusCounts.scheduled} scheduled · {lifegroupAnalytics.activityStatusCounts.completed} completed
+              </p>
             </article>
           </section>
 
-          <section className="card grid gap-4 md:grid-cols-2">
+          <section className="card grid gap-4 lg:grid-cols-3">
             <div>
               <label className="field-label" htmlFor="lifegroup-filter">Filter by Lifegroup</label>
               <select
@@ -726,17 +1248,216 @@ export default function AttendanceRecordsPage() {
               >
                 <option value="all">All Members</option>
                 {lifegroupAnalytics.members.map((member) => (
-                  <option key={member.student_id} value={member.student_id}>{member.full_name}</option>
+                  <option key={member.user_id} value={member.user_id}>{member.name}</option>
                 ))}
               </select>
+              {selectedLifegroupId === "all" ? (
+                <p className="mt-1 text-xs text-[#71847c]">Choose one lifegroup to track a single member.</p>
+              ) : null}
+            </div>
+            <div>
+              <p className="field-label">Date Range</p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLifegroupRangePreset("30d")}
+                  className={lifegroupRangePreset === "30d" ? "btn-primary" : "btn-ghost"}
+                >
+                  Last 30 Days
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLifegroupRangePreset("90d")}
+                  className={lifegroupRangePreset === "90d" ? "btn-primary" : "btn-ghost"}
+                >
+                  Last 90 Days
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLifegroupRangePreset("all")}
+                  className={lifegroupRangePreset === "all" ? "btn-primary" : "btn-ghost"}
+                >
+                  All Time
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLifegroupRangePreset("custom")}
+                  className={lifegroupRangePreset === "custom" ? "btn-primary" : "btn-ghost"}
+                >
+                  Custom
+                </button>
+              </div>
+              {lifegroupRangePreset === "custom" ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <input
+                    type="date"
+                    min={MIN_ANALYTICS_DATE}
+                    value={lifegroupFromDate}
+                    onChange={(event) => setLifegroupFromDate(event.target.value)}
+                    className="field-input max-w-[170px]"
+                    aria-label="Lifegroup start date"
+                  />
+                  <input
+                    type="date"
+                    min={MIN_ANALYTICS_DATE}
+                    value={lifegroupToDate}
+                    onChange={(event) => setLifegroupToDate(event.target.value)}
+                    className="field-input max-w-[170px]"
+                    aria-label="Lifegroup end date"
+                  />
+                </div>
+              ) : null}
+              <p className="mt-2 text-xs text-[#71847c]">
+                {lifegroupRangePreset === "all" ? "All time" : `${lifegroupRange.from} to ${lifegroupRange.to}`}
+              </p>
+            </div>
+          </section>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-[#5e766c]">
+              Attendance comes from lifegroup_attendance records; RSVPs are shown separately and are never counted as attendance.
+            </p>
+            <button type="button" onClick={() => void fetchLifegroupData()} className="btn-primary w-fit" disabled={lifegroupLoading}>
+              {lifegroupLoading ? "Refreshing..." : "Refresh Lifegroup Data"}
+            </button>
+          </div>
+
+          <section className="analytics-panel">
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Attendance & Activity</h2>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <LineChart
+                title="Attendance by Lifegroup"
+                items={lifegroupAnalytics.attendanceByGroup}
+                emptyText="No lifegroup attendance records in this range."
+              />
+              <LineChart
+                title="Members by Lifegroup"
+                items={lifegroupAnalytics.membersByGroup}
+                emptyText="No lifegroup memberships found."
+              />
+              <LineChart
+                title="Attendance Over Time"
+                items={lifegroupAnalytics.trend}
+                emptyText="No lifegroup attendance in this range."
+                emptyHint="Attendance is taken from lifegroup_attendance, not from membership or RSVP records."
+              />
             </div>
           </section>
 
           <section className="analytics-panel">
-            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Activity</h2>
-            <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              <LineChart title="All Lifegroups Overview" items={lifegroupAnalytics.totals} emptyText="No lifegroup activity in this range." />
-              <LineChart title="Activity Over Time" items={lifegroupAnalytics.trend} emptyText="No activity for the selected lifegroup." />
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Comparison</h2>
+              {lifegroupAnalytics.reportAttendanceAvailable ? (
+                <p className="text-xs text-[#71847c]">Per-activity attendance uses lifegroup_attendance_report where available.</p>
+              ) : null}
+            </div>
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
+                    <th className="px-2 py-2">Lifegroup</th>
+                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2">Leader</th>
+                    <th className="px-2 py-2 text-right">Members</th>
+                    <th className="px-2 py-2 text-right">Active</th>
+                    <th className="px-2 py-2 text-right">Activities</th>
+                    <th className="px-2 py-2 text-right">Attendance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lifegroupAnalytics.perGroup.map((group) => (
+                    <tr key={group.id} className="border-b border-[#edf2ef] last:border-0">
+                      <td className="px-2 py-3 font-semibold text-[#2f4d43]">{group.name}</td>
+                      <td className="px-2 py-3 capitalize text-[#5e766c]">{group.status}</td>
+                      <td className="px-2 py-3 text-[#5e766c]">{group.leaderName}</td>
+                      <td className="px-2 py-3 text-right text-[#315349]">{group.members}</td>
+                      <td className="px-2 py-3 text-right text-[#315349]">{group.activeMembers}</td>
+                      <td className="px-2 py-3 text-right text-[#315349]">{group.activities}</td>
+                      <td className="px-2 py-3 text-right text-[#315349]">{group.attendance}</td>
+                    </tr>
+                  ))}
+                  {!lifegroupAnalytics.perGroup.length ? (
+                    <tr>
+                      <td colSpan={6} className="px-2 py-6 text-center text-sm text-[#71847c]">
+                        No lifegroups found. Check that lifegroups are available to your account.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {selectedLifegroupId !== "all" ? (
+            <section className="analytics-panel">
+              <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Members of {selectedLifegroupName}</h2>
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full min-w-[520px] border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
+                      <th className="px-2 py-2">Member</th>
+                      <th className="px-2 py-2">Role</th>
+                      <th className="px-2 py-2">Membership Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lifegroupAnalytics.members.map((member) => (
+                      <tr key={member.user_id} className="border-b border-[#edf2ef] last:border-0">
+                        <td className="px-2 py-3 font-semibold text-[#2f4d43]">{member.name}</td>
+                        <td className="px-2 py-3 capitalize text-[#5e766c]">{member.role}</td>
+                        <td className="px-2 py-3 capitalize text-[#5e766c]">{member.status}</td>
+                      </tr>
+                    ))}
+                    {!lifegroupAnalytics.members.length ? (
+                      <tr>
+                        <td colSpan={3} className="px-2 py-6 text-center text-sm text-[#71847c]">
+                          No membership records for this lifegroup.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+
+          <section className="analytics-panel">
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Recent Activities</h2>
+            {lifegroupReportNote ? <p className="mt-2 text-xs text-[#8a6d3b]">{lifegroupReportNote}</p> : null}
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
+                    <th className="px-2 py-2">Activity</th>
+                    <th className="px-2 py-2">Lifegroup</th>
+                    <th className="px-2 py-2">Date</th>
+                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2 text-right">Attendance</th>
+                    <th className="px-2 py-2 text-right">RSVPs (Y / N / M)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lifegroupAnalytics.recentActivities.map((activity) => (
+                    <tr key={activity.id} className="border-b border-[#edf2ef] last:border-0">
+                      <td className="px-2 py-3 font-semibold text-[#2f4d43]">{activity.title}</td>
+                      <td className="px-2 py-3 text-[#5e766c]">{activity.groupName}</td>
+                      <td className="px-2 py-3 text-[#5e766c]">{activity.date ?? "—"}</td>
+                      <td className="px-2 py-3 capitalize text-[#5e766c]">{activity.status}</td>
+                      <td className="px-2 py-3 text-right text-[#315349]">{activity.attendance}</td>
+                      <td className="px-2 py-3 text-right text-[#315349]">
+                        {activity.yes} / {activity.no} / {activity.maybe}
+                      </td>
+                    </tr>
+                  ))}
+                  {!lifegroupAnalytics.recentActivities.length ? (
+                    <tr>
+                      <td colSpan={7} className="px-2 py-6 text-center text-sm text-[#71847c]">
+                        No lifegroup activities in this date range.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
           </section>
         </section>

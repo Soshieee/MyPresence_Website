@@ -108,6 +108,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [logoFailed, setLogoFailed] = useState(false);
   const [authChecked, setAuthChecked] = useState(() => !hasSupabaseEnv);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
@@ -129,6 +130,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       const authed = Boolean(session);
       setIsAuthenticated(authed);
+      if (!authed) setIsAdmin(false);
       setAuthChecked(true);
 
       if (!authed && pathname !== "/login") {
@@ -147,6 +149,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       const authed = Boolean(session);
       setIsAuthenticated(authed);
+      if (!authed) setIsAdmin(false);
       setAuthChecked(true);
 
       if (!authed && pathname !== "/login") {
@@ -164,16 +167,36 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [pathname, router]);
 
+  useEffect(() => {
+    if (!hasSupabaseEnv || !isAuthenticated) return;
+
+    let active = true;
+    const checkAdmin = async () => {
+      const { data, error } = await supabase.rpc("is_admin");
+      if (!active) return;
+      setIsAdmin(!error && data === true);
+    };
+
+    void checkAdmin();
+    return () => {
+      active = false;
+    };
+  }, [isAuthenticated]);
+
   const handleSignOut = async () => {
     if (!hasSupabaseEnv || signingOut) return;
     setSigningOut(true);
     await supabase.auth.signOut();
+    setIsAdmin(false);
     setSigningOut(false);
     router.replace("/login");
   };
 
   const activePath = pathname;
   const currentTitle = titleFromPath(activePath);
+  const visibleNavItems = isAdmin
+    ? navItems
+    : navItems.filter((item) => item.href !== "/verification");
 
   if (pathname === "/login") {
     if (!hasSupabaseEnv) {
@@ -222,7 +245,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </div>
         <nav className="app-rail__nav" aria-label="Primary Navigation">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const active = activePath === item.href;
             return (
               <Link
@@ -261,7 +284,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </button>
           </div>
           <div className="scrollbar-none flex gap-2 overflow-x-auto px-4 pb-3 md:hidden">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const active = activePath === item.href;
               return (
                 <Link

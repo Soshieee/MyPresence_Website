@@ -264,6 +264,20 @@ function displayHashtag(name: string) {
   return name.startsWith("#") ? name : `#${name}`;
 }
 
+function normalizeHashtagInput(value: string): { normalized: string | null; error: string | null } {
+  const normalized = value.trim().replace(/^#+/, "").toLowerCase();
+  if (!normalized) {
+    return { normalized: null, error: "Enter a hashtag first." };
+  }
+  if (!/^[a-z0-9_][a-z0-9_]{0,49}$/.test(normalized)) {
+    return {
+      normalized: null,
+      error: "Use 1-50 letters, numbers, or underscores. Example: #youth or #sunday_service."
+    };
+  }
+  return { normalized, error: null };
+}
+
 function HashtagPicker({
   hashtags,
   selectedIds,
@@ -605,6 +619,7 @@ export default function EventsManagerPage() {
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [suggestionInput, setSuggestionInput] = useState("");
   const [newHashtagInput, setNewHashtagInput] = useState("");
+  const [hashtagAdminState, setHashtagAdminState] = useState<"checking" | "allowed" | "denied" | "unknown">("checking");
   const [suggestionStatus, setSuggestionStatus] = useState("");
   const [submissionStatus, setSubmissionStatus] = useState("");
   const [selectedEventAttendance, setSelectedEventAttendance] = useState<EventAttendanceRow[]>([]);
@@ -849,13 +864,25 @@ export default function EventsManagerPage() {
       supabase.from("poll_hashtags").select("event_id, poll_key, hashtag_id")
     ]);
 
-    const error = hashtagsResult.error ?? eventLinksResult.error ?? pollLinksResult.error;
-    if (error) {
-      setNotification({ tone: "error", message: `Failed to load hashtags: ${error.message}` });
+    if (hashtagsResult.error) {
+      setNotification({ tone: "error", message: `Failed to load hashtags: ${hashtagsResult.error.message}` });
       return;
     }
 
     setHashtags((hashtagsResult.data ?? []) as SocialHashtag[]);
+
+    if (eventLinksResult.error || pollLinksResult.error) {
+      setEventHashtagIds([]);
+      setPollHashtagRows([]);
+      setNotification({
+        tone: "error",
+        message: `Hashtags loaded, but their event/poll links could not be read: ${
+          eventLinksResult.error?.message ?? pollLinksResult.error?.message ?? "Unknown error."
+        }`
+      });
+      return;
+    }
+
     setEventHashtagIds(
       selectedEventId
         ? ((eventLinksResult.data ?? []) as Array<{ event_id: string; hashtag_id: string }>)
@@ -1000,6 +1027,39 @@ export default function EventsManagerPage() {
   }, [loadCalendar, loadEvents, loadHashtags, loadMemberCounts, loadSuggestions]);
 
   useEffect(() => {
+    if (!hasSupabaseEnv) {
+      setHashtagAdminState("denied");
+      return;
+    }
+
+    let active = true;
+    const checkHashtagAdmin = async () => {
+      const socialAdmin = await supabase.rpc("is_social_admin");
+      if (!active) return;
+      if (!socialAdmin.error) {
+        setHashtagAdminState(socialAdmin.data === true ? "allowed" : "denied");
+        return;
+      }
+
+      const admin = await supabase.rpc("is_admin");
+      if (!active) return;
+      if (!admin.error) {
+        setHashtagAdminState(admin.data === true ? "allowed" : "denied");
+        return;
+      }
+
+      // Neither helper is available. Let the insert attempt run so the
+      // database remains the authority and its error is shown to the user.
+      setHashtagAdminState("unknown");
+    };
+
+    void checkHashtagAdmin();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       setEditingPoll(null);
       setAdditionalPolls([]);
@@ -1063,60 +1123,145 @@ export default function EventsManagerPage() {
   };
 
   const addHashtag = async () => {
-    const value = newHashtagInput.trim();
-    if (!value) {
-      setNotification({ tone: "warning", message: "Enter a hashtag first." });
+    if (hashtagAdminState === "denied") {
+      setNotification({
+        tone: "warning",
+        message: "Only social administrators can create hashtags. You can still select existing hashtags."
+      });
+      return;
+    }
+
+    const { normalized, error: validationError } = normalizeHashtagInput(newHashtagInput);
+    if (!normalized) {
+      setNotification({ tone: "warning", message: validationError ?? "Enter a valid hashtag." });
+      return;
+    }
+
+    const duplicate = hashtags.some((hashtag) => {
+      const existing = hashtag.normalized_name || normalizeHashtagInput(hashtag.name).normalized;
+      return existing === normalized;
+    });
+    if (duplicate) {
+      setNotification({ tone: "warning", message: `#${normalized} already exists.` });
       return;
     }
 
     try {
       const { data, error } = await supabase
         .from("social_hashtags")
-        .insert({ name: value, is_active: true })
+        .insert({
+          name: normalized,
+          normalized_name: normalized,
+          is_default: false,
+          is_active: true
+        })
         .select("id, name, normalized_name, is_default, is_active, created_at")
         .single();
 
       if (error) {
         if (error.code === "23505") {
-          setNotification({ tone: "warning", message: "That hashtag already exists." });
+          setNotification({ tone: "warning", message: `#${normalized} already exists.` });
+        } else if (error.code === "42501" || /row-level security|permission denied/i.test(error.message)) {
+          setNotification({
+            tone: "error",
+            message:
+              "Your account can view hashtags but cannot create them. Ask a social administrator to grant hashtag management access."
+          });
+        } else if (error.code === "23502" || error.code === "23514" || error.message.includes("INVALID_HASHTAG_FORMAT")) {
+          setNotification({
+            tone: "error",
+            message: "The database rejected that hashtag format. Use 1-50 letters, numbers, or underscores."
+          });
         } else {
           setNotification({ tone: "error", message: `Failed to create hashtag: ${error.message}` });
         }
         return;
       }
 
-      setHashtags((previous) => [...previous, data as SocialHashtag].sort((a, b) => a.normalized_name.localeCompare(b.normalized_name)));
+      const saved = data as SocialHashtag;
+      setHashtags((previous) =>
+        [...previous.filter((item) => item.id !== saved.id), saved].sort((a, b) =>
+          a.normalized_name.localeCompare(b.normalized_name)
+        )
+      );
       setNewHashtagInput("");
-      setNotification({ tone: "success", message: `${(data as SocialHashtag).name} was created.` });
+      setNotification({ tone: "success", message: `${displayHashtag(saved.name)} was created.` });
     } catch (error) {
-      setNotification({ tone: "error", message: `Failed to create hashtag: ${error instanceof Error ? error.message : "Unknown error."}` });
+      setNotification({
+        tone: "error",
+        message: `Failed to create hashtag: ${error instanceof Error ? error.message : "Unknown error."}`
+      });
     }
   };
 
   const saveEventHashtags = async (eventId: string, hashtagIds: string[]) => {
-    const { error: deleteError } = await supabase.from("event_hashtags").delete().eq("event_id", eventId);
-    if (deleteError) return deleteError;
-    if (!hashtagIds.length) return null;
+    const desiredIds = [...new Set(hashtagIds)];
+    const { data: existingRows, error: readError } = await supabase
+      .from("event_hashtags")
+      .select("hashtag_id")
+      .eq("event_id", eventId);
+    if (readError) return readError;
 
-    const { error } = await supabase.from("event_hashtags").insert(
-      [...new Set(hashtagIds)].map((hashtag_id) => ({ event_id: eventId, hashtag_id }))
-    );
-    return error;
+    const existingIds = new Set((existingRows ?? []).map((row) => String(row.hashtag_id)));
+    const desiredSet = new Set(desiredIds);
+    const toAdd = desiredIds.filter((id) => !existingIds.has(id));
+    const toRemove = Array.from(existingIds).filter((id) => !desiredSet.has(id));
+
+    // Add first so an interrupted save never drops an existing association.
+    if (toAdd.length) {
+      const { error } = await supabase.from("event_hashtags").upsert(
+        toAdd.map((hashtag_id) => ({ event_id: eventId, hashtag_id })),
+        { onConflict: "event_id,hashtag_id", ignoreDuplicates: true }
+      );
+      if (error) return error;
+    }
+
+    if (toRemove.length) {
+      const { error } = await supabase
+        .from("event_hashtags")
+        .delete()
+        .eq("event_id", eventId)
+        .in("hashtag_id", toRemove);
+      if (error) return error;
+    }
+
+    return null;
   };
 
   const savePollHashtags = async (eventId: string, pollKey: string, hashtagIds: string[]) => {
-    const { error: deleteError } = await supabase
+    const desiredIds = [...new Set(hashtagIds)];
+    const { data: existingRows, error: readError } = await supabase
       .from("poll_hashtags")
-      .delete()
+      .select("hashtag_id")
       .eq("event_id", eventId)
       .eq("poll_key", pollKey);
-    if (deleteError) return deleteError;
-    if (!hashtagIds.length) return null;
+    if (readError) return readError;
 
-    const { error } = await supabase.from("poll_hashtags").insert(
-      [...new Set(hashtagIds)].map((hashtag_id) => ({ event_id: eventId, poll_key: pollKey, hashtag_id }))
-    );
-    return error;
+    const existingIds = new Set((existingRows ?? []).map((row) => String(row.hashtag_id)));
+    const desiredSet = new Set(desiredIds);
+    const toAdd = desiredIds.filter((id) => !existingIds.has(id));
+    const toRemove = Array.from(existingIds).filter((id) => !desiredSet.has(id));
+
+    // Add first so an interrupted save never drops an existing association.
+    if (toAdd.length) {
+      const { error } = await supabase.from("poll_hashtags").upsert(
+        toAdd.map((hashtag_id) => ({ event_id: eventId, poll_key: pollKey, hashtag_id })),
+        { onConflict: "event_id,poll_key,hashtag_id", ignoreDuplicates: true }
+      );
+      if (error) return error;
+    }
+
+    if (toRemove.length) {
+      const { error } = await supabase
+        .from("poll_hashtags")
+        .delete()
+        .eq("event_id", eventId)
+        .eq("poll_key", pollKey)
+        .in("hashtag_id", toRemove);
+      if (error) return error;
+    }
+
+    return null;
   };
 
   const ensureEventHashtags = async (eventId: string, hashtagIds: string[]) => {
@@ -1960,18 +2105,35 @@ export default function EventsManagerPage() {
                 {hashtags.filter((hashtag) => hashtag.is_default).length} system
               </span>
             </div>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <input
-                className="field-input"
-                value={newHashtagInput}
-                onChange={(event) => setNewHashtagInput(event.target.value)}
-                placeholder="#new-hashtag"
-                aria-label="New hashtag"
-              />
-              <button type="button" className="btn-ghost shrink-0" onClick={() => void addHashtag()}>
-                Create hashtag
-              </button>
-            </div>
+            {hashtagAdminState === "denied" ? (
+              <p className="mt-3 rounded-lg border border-[#d9e4df] bg-white px-3 py-2 text-xs text-[#5e766c]">
+                Only social administrators can create hashtags. You can still select any existing hashtag below.
+              </p>
+            ) : (
+              <>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <input
+                    className="field-input"
+                    value={newHashtagInput}
+                    onChange={(event) => setNewHashtagInput(event.target.value)}
+                    placeholder="#youth or #sunday_service"
+                    aria-label="New hashtag"
+                    disabled={hashtagAdminState === "checking"}
+                  />
+                  <button
+                    type="button"
+                    className="btn-ghost shrink-0"
+                    onClick={() => void addHashtag()}
+                    disabled={hashtagAdminState === "checking"}
+                  >
+                    {hashtagAdminState === "checking" ? "Checking access..." : "Create hashtag"}
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-[#71847c]">
+                  Use 1-50 letters, numbers, or underscores. Hashtags are case-insensitive, so #Youth and #youth are the same.
+                </p>
+              </>
+            )}
             <HashtagPicker
               hashtags={hashtags}
               selectedIds={newEventHashtagIds}
