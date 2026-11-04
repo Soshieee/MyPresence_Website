@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { defaultAppSettings, loadAppSettings, saveAppSettings } from "@/lib/app-settings";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
@@ -45,10 +46,6 @@ export default function SettingsPage() {
   const [accountFeedback, setAccountFeedback] = useState<Feedback | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [signingOut, setSigningOut] = useState(false);
-
-  const [resetKey, setResetKey] = useState("");
-  const [resetFeedback, setResetFeedback] = useState<Feedback | null>(null);
-  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     const settings = loadAppSettings();
@@ -162,61 +159,12 @@ export default function SettingsPage() {
     router.replace("/login");
   };
 
-  const canReset = resetKey.trim().toUpperCase() === "RESET";
-
-  const runReset = async (mode: "attendance" | "all") => {
-    if (!hasSupabaseEnv) {
-      setResetFeedback({ tone: "error", message: supabaseEnvIssue ?? "Missing Supabase env values." });
-      return;
-    }
-
-    if (!canReset) {
-      setResetFeedback({ tone: "error", message: "Type RESET to unlock database reset." });
-      return;
-    }
-
-    setResetting(true);
-    setResetFeedback(null);
-
-    try {
-      const attendanceDelete = await supabase.from("attendance").delete().not("id", "is", null);
-      if (attendanceDelete.error) throw attendanceDelete.error;
-
-      if (mode === "all") {
-        const eventsDelete = await supabase.from("events").delete().not("id", "is", null);
-        if (eventsDelete.error) throw eventsDelete.error;
-
-        const usersDelete = await supabase.from("users").delete().not("id", "is", null);
-        if (usersDelete.error) throw usersDelete.error;
-      }
-
-      setResetFeedback({
-        tone: "success",
-        message:
-          mode === "all"
-            ? "Database reset complete: users, attendance, and events cleared."
-            : "Attendance data cleared."
-      });
-      setResetKey("");
-    } catch (error: unknown) {
-      setResetFeedback({
-        tone: "error",
-        message: `Reset failed: ${error instanceof Error ? error.message : "Unknown reset error."}`
-      });
-    } finally {
-      setResetting(false);
-    }
-  };
-
   return (
     <div className="space-y-6 reveal">
       <section className="card overflow-hidden bg-gradient-to-br from-[#f7fbf9] to-[#e9f1ee]">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <h1 className="page-title font-[var(--font-heading)]">Settings</h1>
-            <p className="page-subtitle">
-              Review the signed-in account, configure scanning behaviour, and manage application data.
-            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <span className="rounded-full border border-[#9fc6b7] bg-[#e7f4ee] px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#245142]">
@@ -234,9 +182,6 @@ export default function SettingsPage() {
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <h2 className="font-[var(--font-heading)] text-xl text-[#22332d]">Scan Preferences</h2>
-              <p className="mt-1 text-sm text-[#5d7269]">
-                Control how the scanner handles newcomer tags after attendance is recorded.
-              </p>
             </div>
             <span className="rounded-full border border-[#b9cac3] bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#4f675e]">
               Attendance
@@ -315,9 +260,6 @@ export default function SettingsPage() {
               </p>
             ) : null}
 
-            <p className="text-xs text-[#5f756c]">
-              This preference is stored in this browser only. It is read by the Scan page when the scanner loads.
-            </p>
           </div>
         </section>
 
@@ -376,59 +318,36 @@ export default function SettingsPage() {
         </section>
       </div>
 
-      <section className="analytics-panel border-[#d8c3c5] bg-[#fffafa]">
+      <section className="analytics-panel">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h2 className="font-[var(--font-heading)] text-xl text-[#5b3135]">Data Management</h2>
-            <p className="mt-1 text-sm text-[#744147]">
-              These actions permanently delete live data. They cannot be undone.
-            </p>
+            <h2 className="font-[var(--font-heading)] text-xl text-[#22332d]">Quick access</h2>
+            <p className="mt-1 text-sm text-[#5d7269]">Jump back into the tools you use most.</p>
           </div>
-          <span className="rounded-full border border-[#d9b6ba] bg-[#fff3f4] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8a3f46]">
-            Danger zone
+          <span className="rounded-full border border-[#b9cac3] bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#4f675e]">
+            Workspace
           </span>
         </div>
 
-        <div className="mt-4 space-y-3 rounded-2xl border border-[#e0b8bb] bg-[#fff7f7] p-4 text-[#5b3135]">
-          <p className="text-sm font-semibold">Reset database data</p>
-          <p className="text-xs text-[#744147]">
-            Type <span className="font-semibold">RESET</span> to enable the reset buttons. Clearing attendance keeps
-            members and events; a full reset removes users, attendance, and events.
-          </p>
-          <input
-            type="text"
-            value={resetKey}
-            onChange={(event) => {
-              setResetKey(event.target.value);
-              setResetFeedback(null);
-            }}
-            className="field-input max-w-[220px]"
-            placeholder="Type RESET"
-            aria-label="Type RESET to unlock database reset"
-          />
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="btn-ghost"
-              disabled={!canReset || resetting}
-              onClick={() => void runReset("attendance")}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            { href: "/attendance", label: "Scan attendance", detail: "Record a visit" },
+            { href: "/members", label: "Manage members", detail: "View the directory" },
+            { href: "/records", label: "View records", detail: "Review attendance" },
+            { href: "/events-manager", label: "Manage events", detail: "Update event polls" }
+          ].map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="group rounded-2xl border border-[#c8d6d1] bg-white/80 p-4 transition hover:-translate-y-0.5 hover:border-[#7fa995] hover:bg-[#f4f9f7]"
             >
-              {resetting ? "Working..." : "Clear Attendance Only"}
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center justify-center rounded-full bg-[#b83f49] px-5 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={!canReset || resetting}
-              onClick={() => void runReset("all")}
-            >
-              {resetting ? "Working..." : "Full Reset (Users + Attendance + Events)"}
-            </button>
-          </div>
-          {resetFeedback ? (
-            <p className={feedbackClass(resetFeedback.tone)} role="status">
-              {resetFeedback.message}
-            </p>
-          ) : null}
+              <span className="block text-sm font-semibold text-[#2f4d43]">{item.label}</span>
+              <span className="mt-1 block text-xs text-[#6a7e76]">{item.detail}</span>
+              <span className="mt-3 block text-xs font-semibold uppercase tracking-[0.08em] text-[#527c6b] group-hover:text-[#315d4d]">
+                Open
+              </span>
+            </Link>
+          ))}
         </div>
       </section>
     </div>

@@ -31,10 +31,11 @@ const VERSES = [
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"login" | "signup" | "forgot">("login");
+  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "verify" | "reset-verify" | "reset-password">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -77,7 +78,7 @@ export default function LoginPage() {
     setNotification(null);
   };
 
-  const switchMode = (nextMode: "login" | "signup" | "forgot") => {
+  const switchMode = (nextMode: "login" | "signup" | "forgot" | "verify" | "reset-verify" | "reset-password") => {
     setMode(nextMode);
     setPassword("");
     setConfirmPassword("");
@@ -96,6 +97,33 @@ export default function LoginPage() {
     setSubmitting(true);
     resetFeedback();
 
+    if (mode === "verify" || mode === "reset-verify") {
+      const { error: verifyError } = await supabase.auth.verifyOtp({
+        email: email.trim(),
+        token: verificationCode.trim(),
+        type: mode === "verify" ? "signup" : "recovery"
+      });
+
+      setSubmitting(false);
+      if (verifyError) {
+        setError(verifyError.message || "The verification code is invalid or expired.");
+        return;
+      }
+
+      if (mode === "verify") {
+        setNotification({
+          tone: "success",
+          message: "Email verified. Your application is now waiting for administrator review."
+        });
+        setMode("login");
+      } else {
+        setNotification({ tone: "success", message: "Code verified. Choose a new password." });
+        setMode("reset-password");
+      }
+      setVerificationCode("");
+      return;
+    }
+
     if (mode === "forgot") {
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
         redirectTo: `${window.location.origin}/auth/reset-password`
@@ -103,17 +131,42 @@ export default function LoginPage() {
 
       setSubmitting(false);
       if (resetError) {
-        setNotification({
-          tone: "success",
-          message: "If an account exists for this email, a password reset link has been sent."
-        });
+        setError(resetError.message || "Unable to send a password reset code.");
         return;
       }
 
       setNotification({
         tone: "success",
-        message: "If an account exists for this email, a password reset link has been sent."
+        message: "A password reset code was sent to your email."
       });
+      setMode("reset-verify");
+      return;
+    }
+
+    if (mode === "reset-password") {
+      if (password.length < 8) {
+        setError("Password must be at least 8 characters long.");
+        setSubmitting(false);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("Passwords do not match.");
+        setSubmitting(false);
+        return;
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      setSubmitting(false);
+      if (updateError) {
+        setError(updateError.message || "Unable to update your password.");
+        return;
+      }
+
+      await supabase.auth.signOut();
+      setPassword("");
+      setConfirmPassword("");
+      setNotification({ tone: "success", message: "Password updated successfully. You can now sign in." });
+      setMode("login");
       return;
     }
 
@@ -154,9 +207,9 @@ export default function LoginPage() {
 
       setNotification({
         tone: "success",
-        message: "Account created. Check your email to confirm your address. Your Web Admin Account application is awaiting administrator review."
+        message: "Account created. Enter the verification code sent to your email."
       });
-      setMode("login");
+      setMode("verify");
       setPassword("");
       setConfirmPassword("");
       return;
@@ -241,14 +294,24 @@ export default function LoginPage() {
       <section className="flex items-center justify-center bg-[#e9e9e9] px-6 py-10">
         <form onSubmit={onSubmit} className="w-full max-w-md rounded-3xl border border-[#c3d0cb] bg-white/85 p-8 shadow-[0_18px_36px_rgba(56,91,79,0.14)] backdrop-blur">
           <h2 className="text-center font-[var(--font-heading)] text-3xl text-[#22332d]">
-            {mode === "login" ? "Welcome Back" : mode === "signup" ? "Create Account" : "Reset Password"}
+            {mode === "login"
+              ? "Welcome Back"
+              : mode === "signup"
+                ? "Create Account"
+                : mode === "verify" || mode === "reset-verify"
+                  ? "Verify Email"
+                  : "Reset Password"}
           </h2>
           <p className="mt-2 text-center text-sm text-[#5d7269]">
             {mode === "login"
               ? "Sign in with your admin account to access dashboard pages."
               : mode === "signup"
                 ? "Create a Web Admin Account application for administrator review."
-                : "Enter your email and we will send a secure reset link if an account exists."}
+                : mode === "verify" || mode === "reset-verify"
+                  ? `Enter the 8-digit code sent to ${email}.`
+                  : mode === "reset-password"
+                    ? "Choose a new password for your MyPresence account."
+                    : "Enter your email and we will send a secure reset code if an account exists."}
           </p>
 
           {!hasSupabaseEnv ? <p className="mt-4 status-error">{supabaseEnvIssue}</p> : null}
@@ -267,11 +330,28 @@ export default function LoginPage() {
                 </div>
               </div>
             ) : null}
+            {mode !== "verify" && mode !== "reset-verify" ? (
             <div>
               <label className="field-label" htmlFor="login-email">Email</label>
               <input id="login-email" value={email} onChange={(e) => setEmail(e.target.value)} className="field-input" type="email" required autoComplete="email" />
             </div>
-            {mode !== "forgot" ? (
+            ) : null}
+            {mode === "verify" || mode === "reset-verify" ? (
+              <div>
+                <label className="field-label" htmlFor="verification-code">Verification Code</label>
+                <input
+                  id="verification-code"
+                  value={verificationCode}
+                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                  className="field-input text-center text-lg tracking-[0.35em]"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={8}
+                  required
+                />
+              </div>
+            ) : null}
+            {mode !== "forgot" && mode !== "verify" && mode !== "reset-verify" ? (
               <>
                 <div>
                   <label className="field-label" htmlFor="login-password">Password</label>
@@ -295,14 +375,62 @@ export default function LoginPage() {
           <div className="mt-6 flex flex-col gap-3">
             <button type="submit" className="btn-primary w-full" disabled={submitting || !hasSupabaseEnv}>
               {submitting
-                ? mode === "login" ? "Signing in..." : mode === "signup" ? "Creating account..." : "Sending link..."
-                : mode === "login" ? "Enter Dashboard" : mode === "signup" ? "Create Account" : "Send Reset Link"}
+                ? mode === "login"
+                  ? "Signing in..."
+                  : mode === "signup"
+                    ? "Creating account..."
+                    : mode === "verify" || mode === "reset-verify"
+                      ? "Verifying..."
+                      : mode === "reset-password"
+                        ? "Updating..."
+                        : "Sending code..."
+                : mode === "login"
+                  ? "Enter Dashboard"
+                  : mode === "signup"
+                    ? "Create Account"
+                    : mode === "verify" || mode === "reset-verify"
+                      ? "Verify Email"
+                      : mode === "reset-password"
+                        ? "Update Password"
+                        : "Send Reset Code"}
             </button>
+            {mode === "verify" || mode === "reset-verify" ? (
+              <button
+                type="button"
+                className="text-xs font-semibold text-[#527064] hover:text-[#22332d]"
+                disabled={submitting}
+                onClick={async () => {
+                  setSubmitting(true);
+                  resetFeedback();
+                  const { error: resendError } =
+                    mode === "verify"
+                      ? await supabase.auth.resend({ type: "signup", email: email.trim() })
+                      : await supabase.auth.resetPasswordForEmail(email.trim(), {
+                          redirectTo: `${window.location.origin}/auth/reset-password`
+                        });
+                  setSubmitting(false);
+                  if (resendError) {
+                    setError(resendError.message || "Unable to resend the verification code.");
+                    return;
+                  }
+                  setNotification({
+                    tone: "success",
+                    message: mode === "verify" ? "A new verification code was sent." : "A new password reset code was sent."
+                  });
+                }}
+              >
+                {mode === "verify" ? "Resend verification code" : "Resend reset code"}
+              </button>
+            ) : null}
             {mode === "login" ? (
               <div className="flex items-center justify-between text-xs font-semibold text-[#527064]">
                 <button type="button" className="hover:text-[#22332d]" onClick={() => switchMode("signup")}>Create Account</button>
                 <button type="button" className="hover:text-[#22332d]" onClick={() => switchMode("forgot")}>Forgot Password?</button>
               </div>
+            ) : mode !== "verify" && mode !== "reset-verify" && mode !== "reset-password" ? (
+              <button type="button" className="text-xs font-semibold text-[#527064] hover:text-[#22332d]" onClick={() => switchMode("login")}>
+                Return to Login
+              </button>
             ) : (
               <button type="button" className="text-xs font-semibold text-[#527064] hover:text-[#22332d]" onClick={() => switchMode("login")}>
                 Return to Login
