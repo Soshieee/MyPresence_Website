@@ -16,6 +16,12 @@ import {
   serviceSessionForLog
 } from "@/lib/attendance";
 import { toLocalDateInput } from "@/lib/date";
+import {
+  downloadCsv,
+  openReportWindow,
+  toCsv,
+  type ReportTable
+} from "@/lib/records-report";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
 type RecordsView = "attendance" | "lifegroups";
@@ -289,6 +295,7 @@ export default function AttendanceRecordsPage() {
   const [lifegroupToDate, setLifegroupToDate] = useState("");
   const [comparisonPage, setComparisonPage] = useState(0);
   const [activityPage, setActivityPage] = useState(0);
+  const [reportNotice, setReportNotice] = useState("");
 
   const range = useMemo(() => {
     const today = new Date();
@@ -1114,8 +1121,7 @@ export default function AttendanceRecordsPage() {
           maybe: activityRsvps.filter((row) => normalizeRsvpResponse(row.response ?? null) === "maybe").length
         };
       })
-      .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || a.title.localeCompare(b.title))
-      .slice(0, 20);
+      .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || a.title.localeCompare(b.title));
 
     return {
       scopedGroups,
@@ -1171,6 +1177,279 @@ export default function AttendanceRecordsPage() {
     safeActivityPage * LIFEGROUP_PANEL_PAGE_SIZE,
     (safeActivityPage + 1) * LIFEGROUP_PANEL_PAGE_SIZE
   );
+
+  const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
+    today: "Today",
+    "7d": "Last 7 days",
+    "30d": "Last 30 days",
+    custom: "Custom range"
+  };
+
+  const toDistributionTable = (
+    title: string,
+    items: Array<{ label: string; value: number }>
+  ): ReportTable => {
+    const total = items.reduce((sum, item) => sum + item.value, 0);
+    return {
+      title,
+      columns: ["Category", "Count", "Share"],
+      rows: items.map((item) => [
+        item.label,
+        item.value,
+        total > 0 ? Math.round((item.value / total) * 1000) / 10 : 0
+      ]),
+      rightAlignFrom: 1,
+      barColumn: 2
+    };
+  };
+
+  const printAttendanceReport = () => {
+    const ministryLabel =
+      selectedNetworks.length === 0
+        ? "All ministries"
+        : selectedNetworks.map((network) => NETWORK_LABELS[network]).join(", ");
+    const opened = openReportWindow({
+      title: "Attendance Records Report",
+      orientation: "landscape",
+      metaRows: [
+        `Date range: ${formatDateMMDDYY(range.from)} – ${formatDateMMDDYY(range.to)} (${RANGE_PRESET_LABELS[rangePreset]})`,
+        `Ministries: ${ministryLabel}`,
+        `Attendance type: ${attendanceTypeFilter === "all" ? "All" : attendanceTypeFilter}`,
+        `Linked event: ${selectedLinkedEventLabel ?? "All"}`,
+        ...(searchTerm.trim() ? [`Search: "${searchTerm.trim()}"`] : [])
+      ],
+      stats: [
+        { label: "Attendees", value: filteredLogs.length },
+        { label: "Newcomers", value: newcomerAttendeeCount },
+        { label: "Returning Attendees", value: returningAttendeeCount },
+        { label: "Newcomer Visits", value: newcomerCheckInCount }
+      ],
+      sections: [
+        {
+          title: `Attendance Records (${filteredLogs.length})`,
+          tables: [
+            {
+              title: "All filtered records",
+              columns: [
+                "Member Name",
+                "Member ID",
+                "Attendance Type",
+                "Service Session",
+                "Event Name",
+                "Event Type",
+                "Date",
+                "Time"
+              ],
+              rightAlignFrom: 7,
+              rows: filteredLogs.map((log) => {
+                const attendanceType = normalizeAttendanceType(log.attendance_context, log.attendance_group);
+                const linkedEvent = log.event_id ? eventLookup[log.event_id] : null;
+                return [
+                  log.full_name,
+                  log.student_id,
+                  attendanceType ?? "Unknown",
+                  serviceSessionForLog(log),
+                  linkedEvent?.title ?? "N/A",
+                  linkedEvent?.eventType ?? "N/A",
+                  formatDateMMDDYY(log.attended_date),
+                  new Date(log.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                ];
+              })
+            }
+          ]
+        },
+        {
+          title: "Analytics",
+          tables: [
+            toDistributionTable("Attendees by Day (Last 10)", dailyTotals),
+            toDistributionTable("Attendees by Ministry", recordsByGroup),
+            toDistributionTable("Newcomer Visits by Ministry", newcomerByGroup),
+            toDistributionTable("Attendees by Attendance Type", attendanceByContext),
+            toDistributionTable("Attendees by Linked Event", attendanceByLinkedEvent),
+            toDistributionTable("Attendees by Service or Event", attendanceByGroup),
+            toDistributionTable("Newcomers by Ministry", demographicAnalytics.newcomersByNetwork),
+            toDistributionTable("Attendee Age Distribution", demographicAnalytics.ageDistribution),
+            toDistributionTable("Attendee Gender Distribution", demographicAnalytics.genderDistribution)
+          ]
+        }
+      ]
+    });
+    setReportNotice(opened ? "" : "Allow pop-ups for this site to open the printable report.");
+  };
+
+  const exportAttendanceCsv = () => {
+    const csv = toCsv(
+      [
+        "Member Name",
+        "Member ID",
+        "Attendance Type",
+        "Service Session",
+        "Event Name",
+        "Event Type",
+        "Date",
+        "Time"
+      ],
+      filteredLogs.map((log) => {
+        const attendanceType = normalizeAttendanceType(log.attendance_context, log.attendance_group);
+        const linkedEvent = log.event_id ? eventLookup[log.event_id] : null;
+        return [
+          log.full_name,
+          log.student_id,
+          attendanceType ?? "Unknown",
+          serviceSessionForLog(log),
+          linkedEvent?.title ?? "N/A",
+          linkedEvent?.eventType ?? "N/A",
+          log.attended_date,
+          new Date(log.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        ];
+      })
+    );
+    downloadCsv(`attendance-records_${range.from}_to_${range.to}.csv`, csv);
+    setReportNotice("");
+  };
+
+  const printLifegroupReport = () => {
+    const memberName =
+      selectedLifegroupMemberId === "all"
+        ? "All members"
+        : lifegroupAnalytics.members.find((member) => member.user_id === selectedLifegroupMemberId)?.name ??
+          "Selected member";
+    const statusItems = [
+      { label: "Scheduled", value: lifegroupAnalytics.activityStatusCounts.scheduled },
+      { label: "Completed", value: lifegroupAnalytics.activityStatusCounts.completed },
+      { label: "Cancelled", value: lifegroupAnalytics.activityStatusCounts.cancelled },
+      { label: "Other", value: lifegroupAnalytics.activityStatusCounts.other }
+    ];
+    const opened = openReportWindow({
+      title: "Lifegroup Analytics Report",
+      orientation: "portrait",
+      metaRows: [
+        `Date range: ${lifegroupRange.from} to ${lifegroupRange.to} (${RANGE_PRESET_LABELS[lifegroupRangePreset]})`,
+        `Lifegroup: ${selectedLifegroupName || "All lifegroups"}`,
+        `Member: ${memberName}`,
+        ...(lifegroupReportNote ? [lifegroupReportNote] : [])
+      ],
+      stats: [
+        { label: "Lifegroups", value: lifegroupAnalytics.totalGroups },
+        { label: "Members", value: lifegroupAnalytics.totalMembers },
+        { label: "Active Members", value: lifegroupAnalytics.activeMembers },
+        { label: "Inactive / Pending", value: lifegroupAnalytics.inactiveMembers },
+        { label: "Activities", value: lifegroupAnalytics.activities },
+        { label: "Attendance", value: lifegroupAnalytics.attendanceCount },
+        { label: "Absent", value: lifegroupAnalytics.absentCount },
+        { label: "Unique Attendees", value: lifegroupAnalytics.uniqueAttendees },
+        { label: "RSVPs", value: lifegroupAnalytics.rsvpCount }
+      ],
+      sections: [
+        {
+          title: "Breakdowns",
+          tables: [
+            toDistributionTable("Activity Status", statusItems),
+            toDistributionTable("RSVP Responses", lifegroupAnalytics.rsvpBreakdown)
+          ]
+        },
+        {
+          title: "Lifegroup Comparison",
+          tables: [
+            {
+              title: "All lifegroups in range",
+              columns: [
+                "Lifegroup",
+                "Leader",
+                "Members",
+                "Active",
+                "Activities",
+                "Attendance",
+                "Absent",
+                "Unique Attendees",
+                "RSVPs",
+                "Avg / Activity"
+              ],
+              rightAlignFrom: 2,
+              rows: lifegroupAnalytics.perGroup.map((group) => [
+                group.name,
+                group.leaderName,
+                group.members,
+                group.activeMembers,
+                group.activities,
+                group.attendance,
+                group.absent,
+                group.uniqueAttendees,
+                group.rsvps,
+                group.avgAttendancePerActivity.toFixed(1)
+              ])
+            }
+          ]
+        },
+        ...(selectedLifegroupId !== "all"
+          ? [
+              {
+                title: `Members of ${selectedLifegroupName}`,
+                tables: [
+                  {
+                    title: "Membership",
+                    columns: ["Member", "Role", "Membership Status"],
+                    rows: lifegroupAnalytics.members.map((member) => [
+                      member.name,
+                      member.role,
+                      member.status
+                    ])
+                  }
+                ]
+              }
+            ]
+          : []),
+        {
+          title: `Activities (${lifegroupAnalytics.recentActivities.length})`,
+          tables: [
+            {
+              title: "All activities in range",
+              columns: ["Activity", "Lifegroup", "Date", "Status", "Attendance", "RSVPs (Y / N / M)"],
+              rightAlignFrom: 4,
+              rows: lifegroupAnalytics.recentActivities.map((activity) => [
+                activity.title,
+                activity.groupName,
+                activity.date ?? "—",
+                activity.status,
+                activity.attendance,
+                `${activity.yes} / ${activity.no} / ${activity.maybe}`
+              ])
+            }
+          ]
+        }
+      ]
+    });
+    setReportNotice(opened ? "" : "Allow pop-ups for this site to open the printable report.");
+  };
+
+  const exportLifegroupCsv = () => {
+    const csv = toCsv(
+      [
+        "Activity",
+        "Lifegroup",
+        "Date",
+        "Status",
+        "Attendance",
+        "Unique Attendees",
+        "RSVP Yes",
+        "RSVP No",
+        "RSVP Maybe"
+      ],
+      lifegroupAnalytics.recentActivities.map((activity) => [
+        activity.title,
+        activity.groupName,
+        activity.date ?? "",
+        activity.status,
+        activity.attendance,
+        activity.uniqueAttendees,
+        activity.yes,
+        activity.no,
+        activity.maybe
+      ])
+    );
+    downloadCsv(`lifegroup-activities_${lifegroupRange.from}_to_${lifegroupRange.to}.csv`, csv);
+    setReportNotice("");
+  };
 
   return (
     <div className="space-y-6 reveal">
@@ -1319,10 +1598,16 @@ export default function AttendanceRecordsPage() {
             <button type="button" onClick={() => void fetchLifegroupData()} className="btn-primary w-fit" disabled={lifegroupLoading}>
               {lifegroupLoading ? "Refreshing..." : "Refresh Lifegroup Data"}
             </button>
-            <button type="button" onClick={() => window.print()} className="btn-ghost w-fit">
-              Print/Save PDF
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={exportLifegroupCsv} className="btn-ghost w-fit">
+                Export CSV
+              </button>
+              <button type="button" onClick={printLifegroupReport} className="btn-ghost w-fit">
+                Print/Save PDF
+              </button>
+            </div>
           </div>
+          {reportNotice ? <div className="status-info">{reportNotice}</div> : null}
 
           <section className="analytics-panel">
             <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Attendance & Activity</h2>
@@ -1540,12 +1825,18 @@ export default function AttendanceRecordsPage() {
             </>
           ) : null}
         </div>
-        <button onClick={() => void fetchLogs()} className="btn-primary w-fit">
-          Refresh
-        </button>
-        <button onClick={() => window.print()} className="btn-ghost w-fit">
-          Print / Save PDF
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => void fetchLogs()} className="btn-primary w-fit">
+            Refresh
+          </button>
+          <button type="button" onClick={exportAttendanceCsv} className="btn-ghost w-fit">
+            Export CSV
+          </button>
+          <button type="button" onClick={printAttendanceReport} className="btn-ghost w-fit">
+            Print / Save PDF
+          </button>
+        </div>
+        {reportNotice ? <div className="status-info">{reportNotice}</div> : null}
       </div>
 
       <div className="card space-y-3">
