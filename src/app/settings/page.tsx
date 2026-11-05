@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { defaultAppSettings, loadAppSettings, saveAppSettings } from "@/lib/app-settings";
@@ -46,6 +46,10 @@ export default function SettingsPage() {
   const [accountFeedback, setAccountFeedback] = useState<Feedback | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [signingOut, setSigningOut] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [unlockEmail, setUnlockEmail] = useState("");
+  const [unlockFeedback, setUnlockFeedback] = useState<Feedback | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
 
   useEffect(() => {
     const settings = loadAppSettings();
@@ -94,6 +98,24 @@ export default function SettingsPage() {
     };
 
     void loadAccount();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasSupabaseEnv) return;
+
+    let active = true;
+
+    const checkAdmin = async () => {
+      const { data, error } = await supabase.rpc("is_admin");
+      if (!active) return;
+      setIsAdmin(!error && data === true);
+    };
+
+    void checkAdmin();
 
     return () => {
       active = false;
@@ -157,6 +179,42 @@ export default function SettingsPage() {
     }
 
     router.replace("/login");
+  };
+
+  const handleUnlockAccount = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const email = unlockEmail.trim().toLowerCase();
+    if (!email || unlocking) return;
+
+    setUnlocking(true);
+    setUnlockFeedback(null);
+
+    const { data, error } = await supabase.rpc("auth_admin_unlock", { p_email: email });
+
+    setUnlocking(false);
+
+    if (error) {
+      const message = error.message.includes("AUTH_ADMIN_REQUIRED")
+        ? "Administrator access is required to unlock an account."
+        : "The account lockout could not be cleared. Please try again.";
+      setUnlockFeedback({ tone: "error", message });
+      return;
+    }
+
+    if (data === true) {
+      setUnlockEmail("");
+      setUnlockFeedback({
+        tone: "success",
+        message: "The temporary lockout was cleared. The user can sign in again."
+      });
+      return;
+    }
+
+    setUnlockFeedback({
+      tone: "info",
+      message: "No active lockout was found for that email address."
+    });
   };
 
   return (
@@ -318,6 +376,54 @@ export default function SettingsPage() {
         </section>
       </div>
 
+      {isAdmin ? (
+        <section className="analytics-panel">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="font-[var(--font-heading)] text-xl text-[#22332d]">Account Security</h2>
+              <p className="mt-1 text-sm text-[#5d7269]">
+                Clear a temporary login lockout for an approved account.
+              </p>
+            </div>
+            <span className="rounded-full border border-[#d7b46a] bg-[#fff8e8] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a5a17]">
+              Administrator
+            </span>
+          </div>
+
+          <form className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end" onSubmit={handleUnlockAccount}>
+            <div>
+              <label className="field-label" htmlFor="unlock-email">
+                Locked account email
+              </label>
+              <input
+                id="unlock-email"
+                className="field-input"
+                type="email"
+                value={unlockEmail}
+                onChange={(event) => setUnlockEmail(event.target.value)}
+                placeholder="member@example.com"
+                autoComplete="email"
+                required
+              />
+            </div>
+            <button type="submit" className="btn-primary" disabled={unlocking || !unlockEmail.trim()}>
+              {unlocking ? "Unlocking..." : "Unlock Account"}
+            </button>
+          </form>
+
+          <p className="mt-3 text-xs leading-5 text-[#6a7e76]">
+            Lockouts clear automatically after 15 minutes. This action only clears the new login-attempt record;
+            it does not change the user&apos;s password or member data. The unlock is recorded in the security log.
+          </p>
+
+          {unlockFeedback ? (
+            <p className={`${feedbackClass(unlockFeedback.tone)} mt-3`} role="status">
+              {unlockFeedback.message}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="analytics-panel">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
@@ -334,7 +440,10 @@ export default function SettingsPage() {
             { href: "/attendance", label: "Scan attendance", detail: "Record a visit" },
             { href: "/members", label: "Manage members", detail: "View the directory" },
             { href: "/records", label: "View records", detail: "Review attendance" },
-            { href: "/events-manager", label: "Manage events", detail: "Update event polls" }
+            { href: "/events-manager", label: "Manage events", detail: "Update event polls" },
+            { href: "/help", label: "Help Center", detail: "Search user guides" },
+            { href: "/privacy", label: "Privacy Notice", detail: "Review data practices" },
+            { href: "/terms", label: "Terms", detail: "Read acceptable use" }
           ].map((item) => (
             <Link
               key={item.href}

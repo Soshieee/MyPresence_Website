@@ -462,7 +462,7 @@ export default function MembersPage() {
         <h1 className="page-title font-[var(--font-heading)]">Member Management</h1>
       </section>
 
-      <section className="analytics-strip">
+      <section className="analytics-strip" data-tour="members-overview">
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Total Members</p>
           <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{members.length}</p>

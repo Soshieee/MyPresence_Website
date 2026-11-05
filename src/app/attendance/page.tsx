@@ -765,7 +765,7 @@ export default function AttendancePage() {
         </div>
       ) : null}
 
-      <section className="card scan-focus-panel space-y-4">
+      <section className="card scan-focus-panel space-y-4" data-tour="attendance-scanner">
         <p className="rounded-xl border border-[#98b6aa] bg-[#e7f1ed] px-4 py-3 text-base font-semibold text-[#25493e] md:text-lg">
           Select an attendance type, then scan. A linked event is optional.
         </p>

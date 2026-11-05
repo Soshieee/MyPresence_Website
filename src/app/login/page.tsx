@@ -1,10 +1,29 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import AppNotification, { AppNotificationTone } from "@/components/app-notification";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
+
+type LoginApiResult = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  code?: string;
+  warning?: string;
+  remainingAttempts?: number;
+  retryAfterSeconds?: number;
+  access_token?: string;
+  refresh_token?: string;
+};
+
+function formatCountdown(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 
 const VERSES = [
   {
@@ -41,6 +60,9 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const [lockoutNow, setLockoutNow] = useState(0);
   const [notification, setNotification] = useState<{ tone: AppNotificationTone; message: string } | null>(null);
   // Start from a stable value so server and client render the same verse.
   // The interval below still rotates through the rest.
@@ -73,8 +95,25 @@ export default function LoginPage() {
     return () => window.clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!lockoutUntil) return;
+
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setLockoutNow(now);
+      if (now >= lockoutUntil) setLockoutUntil(null);
+    }, 1000);
+
+    return () => window.clearInterval(id);
+  }, [lockoutUntil]);
+
+  const lockoutRemaining = lockoutUntil
+    ? Math.max(0, Math.ceil((lockoutUntil - lockoutNow) / 1000))
+    : 0;
+
   const resetFeedback = () => {
     setError("");
+    setWarning("");
     setNotification(null);
   };
 
@@ -91,6 +130,11 @@ export default function LoginPage() {
 
     if (!hasSupabaseEnv) {
       setError(supabaseEnvIssue ?? "Missing Supabase environment values.");
+      return;
+    }
+
+    if (mode === "login" && lockoutRemaining > 0) {
+      setError(`Too many failed attempts. Try again in ${formatCountdown(lockoutRemaining)}.`);
       return;
     }
 
@@ -125,19 +169,31 @@ export default function LoginPage() {
     }
 
     if (mode === "forgot") {
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: `${window.location.origin}/auth/reset-password`
-      });
+      let response: Response;
 
+      try {
+        response = await fetch("/api/auth/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email.trim() })
+        });
+      } catch {
+        setSubmitting(false);
+        setError("Unable to reach the password reset service. Please try again.");
+        return;
+      }
+
+      const result = await response.json().catch(() => ({})) as LoginApiResult;
       setSubmitting(false);
-      if (resetError) {
-        setError(resetError.message || "Unable to send a password reset code.");
+
+      if (!response.ok) {
+        setError(result.error || "Unable to process the password reset request.");
         return;
       }
 
       setNotification({
         tone: "success",
-        message: "A password reset code was sent to your email."
+        message: result.message || "A password reset code has been sent."
       });
       setMode("reset-verify");
       return;
@@ -215,18 +271,56 @@ export default function LoginPage() {
       return;
     }
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password
-    });
+    let response: Response;
 
-    if (signInError) {
-      setError(signInError.message || "Login failed.");
+    try {
+      response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password })
+      });
+    } catch {
       setSubmitting(false);
+      setError("Unable to reach the sign-in service. Please try again.");
       return;
     }
 
+    const result = await response.json().catch(() => ({})) as LoginApiResult;
+
+    if (!response.ok) {
+      setSubmitting(false);
+
+      if (result.code === "ACCOUNT_LOCKED" && typeof result.retryAfterSeconds === "number") {
+        const now = Date.now();
+        setLockoutNow(now);
+        setLockoutUntil(now + result.retryAfterSeconds * 1000);
+      }
+
+      setError(result.error || "Login failed. Please try again.");
+      if (result.warning) setWarning(result.warning);
+      return;
+    }
+
+    if (!result.access_token || !result.refresh_token) {
+      setSubmitting(false);
+      setError("Sign-in completed but the session could not be established. Please try again.");
+      return;
+    }
+
+    const { error: sessionError } = await supabase.auth.setSession({
+      access_token: result.access_token,
+      refresh_token: result.refresh_token
+    });
+
     setSubmitting(false);
+
+    if (sessionError) {
+      setError(sessionError.message || "Unable to establish your session. Please try again.");
+      return;
+    }
+
+    setLockoutUntil(null);
+    setWarning("");
     router.replace("/");
   };
 
@@ -316,6 +410,11 @@ export default function LoginPage() {
 
           {!hasSupabaseEnv ? <p className="mt-4 status-error">{supabaseEnvIssue}</p> : null}
           {error ? <p className="mt-4 status-error">{error}</p> : null}
+          {warning ? (
+            <p className="mt-3 rounded-xl border border-[#e5cf93] bg-[#fffaf0] px-4 py-3 text-sm text-[#7a5a17]" role="status">
+              {warning}
+            </p>
+          ) : null}
 
           <div className="mt-7 space-y-4">
             {mode === "signup" ? (
@@ -373,26 +472,32 @@ export default function LoginPage() {
           </div>
 
           <div className="mt-6 flex flex-col gap-3">
-            <button type="submit" className="btn-primary w-full" disabled={submitting || !hasSupabaseEnv}>
-              {submitting
-                ? mode === "login"
-                  ? "Signing in..."
-                  : mode === "signup"
-                    ? "Creating account..."
-                    : mode === "verify" || mode === "reset-verify"
-                      ? "Verifying..."
-                      : mode === "reset-password"
-                        ? "Updating..."
-                        : "Sending code..."
-                : mode === "login"
-                  ? "Enter Dashboard"
-                  : mode === "signup"
-                    ? "Create Account"
-                    : mode === "verify" || mode === "reset-verify"
-                      ? "Verify Email"
-                      : mode === "reset-password"
-                        ? "Update Password"
-                        : "Send Reset Code"}
+            <button
+              type="submit"
+              className="btn-primary w-full"
+              disabled={submitting || !hasSupabaseEnv || (mode === "login" && lockoutRemaining > 0)}
+            >
+              {mode === "login" && lockoutRemaining > 0
+                ? `Try again in ${formatCountdown(lockoutRemaining)}`
+                : submitting
+                  ? mode === "login"
+                    ? "Signing in..."
+                    : mode === "signup"
+                      ? "Creating account..."
+                      : mode === "verify" || mode === "reset-verify"
+                        ? "Verifying..."
+                        : mode === "reset-password"
+                          ? "Updating..."
+                          : "Sending code..."
+                  : mode === "login"
+                    ? "Enter Dashboard"
+                    : mode === "signup"
+                      ? "Create Account"
+                      : mode === "verify" || mode === "reset-verify"
+                        ? "Verify Email"
+                        : mode === "reset-password"
+                          ? "Update Password"
+                          : "Send Reset Code"}
             </button>
             {mode === "verify" || mode === "reset-verify" ? (
               <button
@@ -402,20 +507,48 @@ export default function LoginPage() {
                 onClick={async () => {
                   setSubmitting(true);
                   resetFeedback();
-                  const { error: resendError } =
-                    mode === "verify"
-                      ? await supabase.auth.resend({ type: "signup", email: email.trim() })
-                      : await supabase.auth.resetPasswordForEmail(email.trim(), {
-                          redirectTo: `${window.location.origin}/auth/reset-password`
-                        });
-                  setSubmitting(false);
-                  if (resendError) {
-                    setError(resendError.message || "Unable to resend the verification code.");
+
+                  if (mode === "verify") {
+                    const { error: resendError } = await supabase.auth.resend({
+                      type: "signup",
+                      email: email.trim()
+                    });
+
+                    setSubmitting(false);
+                    if (resendError) {
+                      setError(resendError.message || "Unable to resend the verification code.");
+                      return;
+                    }
+
+                    setNotification({ tone: "success", message: "A new verification code was sent." });
                     return;
                   }
+
+                  let response: Response;
+
+                  try {
+                    response = await fetch("/api/auth/forgot-password", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ email: email.trim() })
+                    });
+                  } catch {
+                    setSubmitting(false);
+                    setError("Unable to reach the password reset service. Please try again.");
+                    return;
+                  }
+
+                  const result = await response.json().catch(() => ({})) as LoginApiResult;
+                  setSubmitting(false);
+
+                  if (!response.ok) {
+                    setError(result.error || "Unable to resend the password reset code.");
+                    return;
+                  }
+
                   setNotification({
                     tone: "success",
-                    message: mode === "verify" ? "A new verification code was sent." : "A new password reset code was sent."
+                    message: result.message || "A password reset code has been sent."
                   });
                 }}
               >
@@ -437,6 +570,18 @@ export default function LoginPage() {
               </button>
             )}
           </div>
+
+          <p className="mt-6 text-center text-[11px] leading-5 text-[#5d7269]">
+            By continuing, you agree to our{" "}
+            <Link href="/terms" className="font-semibold text-[#35564a] underline-offset-2 hover:underline">
+              Terms and Conditions
+            </Link>{" "}
+            and acknowledge our{" "}
+            <Link href="/privacy" className="font-semibold text-[#35564a] underline-offset-2 hover:underline">
+              Privacy Notice
+            </Link>
+            .
+          </p>
         </form>
       </section>
       {notification ? <AppNotification tone={notification.tone} message={notification.message} onDismiss={() => setNotification(null)} /> : null}

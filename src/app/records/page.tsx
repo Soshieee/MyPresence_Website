@@ -1508,7 +1508,7 @@ export default function AttendanceRecordsPage() {
       ) : null}
 
       <div className={recordsView === "attendance" ? "space-y-6" : "hidden"}>
-      <section className="analytics-strip">
+      <section className="analytics-strip" data-tour="records-overview">
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Attendees</p>
           <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{filteredLogs.length}</p>

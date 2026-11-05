@@ -2202,7 +2202,7 @@ export default function EventsManagerPage() {
           <div className="status-info">{status}</div>
         </form>
 
-        <section id="recent-events" className="card scroll-mt-6">
+        <section id="recent-events" className="card scroll-mt-6" data-tour="events-recent">
           <h2 className="font-[var(--font-heading)] text-xl text-[#23332d]">Recent Events</h2>
           <div className="mt-4 space-y-3">
             {events.length === 0 ? (

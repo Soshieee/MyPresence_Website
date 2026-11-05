@@ -4,18 +4,21 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import OnboardingTour from "@/components/onboarding-tour";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 
 type NavItem = {
   href: string;
   label: string;
   icon: JSX.Element;
+  tourId: string;
 };
 
 const navItems: NavItem[] = [
   {
     href: "/",
     label: "Home",
+    tourId: "nav-home",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M3 11.5 12 4l9 7.5" />
@@ -26,6 +29,7 @@ const navItems: NavItem[] = [
   {
     href: "/register",
     label: "Register",
+    tourId: "nav-register",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z" />
@@ -36,6 +40,7 @@ const navItems: NavItem[] = [
   {
     href: "/attendance",
     label: "Scan",
+    tourId: "nav-attendance",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <rect x="5" y="5" width="14" height="14" rx="2" />
@@ -46,6 +51,7 @@ const navItems: NavItem[] = [
   {
     href: "/records",
     label: "Records",
+    tourId: "nav-records",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M5 4h14v16H5z" />
@@ -56,6 +62,7 @@ const navItems: NavItem[] = [
   {
     href: "/events-manager",
     label: "Events",
+    tourId: "nav-events",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M4 7h16v13H4z" />
@@ -66,6 +73,7 @@ const navItems: NavItem[] = [
   {
     href: "/members",
     label: "Members",
+    tourId: "nav-members",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M16 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3Z" />
@@ -78,6 +86,7 @@ const navItems: NavItem[] = [
   {
     href: "/verification",
     label: "Verification",
+    tourId: "nav-verification",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="m5 12 4 4L19 6" />
@@ -88,10 +97,23 @@ const navItems: NavItem[] = [
   {
     href: "/settings",
     label: "Settings",
+    tourId: "nav-settings",
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M12 15.5a3.5 3.5 0 1 0-3.5-3.5A3.5 3.5 0 0 0 12 15.5Z" />
         <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .95 1.7 1.7 0 0 0-.1.65V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.86.35l-.07.06a2 2 0 0 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.95-1 1.7 1.7 0 0 0-.65-.1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.35-1.86l-.06-.07a2 2 0 0 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.95 1.7 1.7 0 0 0 .1-.65V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.1 1.6 1.7 1.7 0 0 0 1.86-.35l.07-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .95 1 1.7 1.7 0 0 0 .65.1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5.9Z" />
+      </svg>
+    )
+  },
+  {
+    href: "/help",
+    label: "Help",
+    tourId: "nav-help",
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.5 9a2.5 2.5 0 1 1 4.3 1.8c-.8.7-1.8 1.1-1.8 2.7" />
+        <path d="M12 17.2h.01" />
       </svg>
     )
   }
@@ -99,6 +121,9 @@ const navItems: NavItem[] = [
 
 function titleFromPath(pathname: string) {
   if (pathname === "/login" || pathname.startsWith("/auth/")) return "Login";
+  if (pathname === "/help") return "Help Center";
+  if (pathname === "/terms") return "Terms and Conditions";
+  if (pathname === "/privacy") return "Privacy Notice";
   return "MyPresence";
 }
 
@@ -110,7 +135,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const isPublicAuthRoute = pathname === "/login" || pathname.startsWith("/auth/");
+  const isLegalRoute = pathname === "/terms" || pathname === "/privacy";
+  const isPublicAuthRoute = pathname === "/login" || pathname.startsWith("/auth/") || isLegalRoute;
 
   useEffect(() => {
     if (!hasSupabaseEnv) {
@@ -199,6 +225,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     ? navItems
     : navItems.filter((item) => item.href !== "/verification");
 
+  if (isLegalRoute) {
+    return <>{children}</>;
+  }
+
   if (isPublicAuthRoute) {
     if (!hasSupabaseEnv) {
       return (
@@ -254,6 +284,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 href={item.href}
                 className={`app-rail__item ${active ? "app-rail__item--active" : ""}`}
                 title={item.label}
+                data-tour={item.tourId}
               >
                 <span className="app-rail__glyph">{item.icon}</span>
                 <span className="app-rail__label">{item.label}</span>
@@ -308,6 +339,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
                     active ? "bg-[#385b4f] text-white" : "bg-white/80 text-[#35564a]"
                   }`}
+                  data-tour={item.tourId}
                 >
                   {item.label}
                 </Link>
@@ -317,6 +349,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         <main>{children}</main>
       </div>
+      <OnboardingTour />
     </div>
   );
 }

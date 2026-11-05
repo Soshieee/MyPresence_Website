@@ -10,3 +10,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Graphify knowledge graph output (rebuilt via `graphify extract . --code-only`)
+graphify-out/

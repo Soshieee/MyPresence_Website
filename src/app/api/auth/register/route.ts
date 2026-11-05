@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { getConfiguredSiteUrl } from "@/lib/supabase-server";
 
 type RegistrationBody = {
   firstName?: unknown;
@@ -78,7 +79,7 @@ export async function POST(request: Request) {
 
     const authClient = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const adminClient = createClient(url, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
-    const redirectTo = `${new URL(request.url).origin}/auth/callback`;
+    const redirectTo = `${getConfiguredSiteUrl(request)}/auth/callback`;
 
     type SignUpResult = Awaited<ReturnType<typeof authClient.auth.signUp>>;
     let signUpData: SignUpResult["data"];
