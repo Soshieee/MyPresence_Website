@@ -82,7 +82,8 @@ const tourSteps: TourStep[] = [
     title: "You're all set",
     description:
       "You've seen the main parts of MyPresence. You can revisit any page from the sidebar or mobile shortcuts, and restart this walkthrough anytime from the Help Center.",
-    hint: "Open Help whenever you need step-by-step guides or troubleshooting."
+    hint: "Open Help whenever you need step-by-step guides or troubleshooting.",
+    page: "/"
   }
 ];
 

@@ -5,6 +5,7 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import OnboardingTour from "@/components/onboarding-tour";
+import JumpToTop from "@/components/jump-to-top";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 
 type NavItem = {
@@ -292,23 +293,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <button
-          type="button"
-          className="app-rail__item mb-5 shrink-0"
-          title="Jump to Top"
-          aria-label="Jump to Top"
-          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-        >
-          <span className="app-rail__glyph">
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="8.5" />
-              <path d="m8.5 12.5 3.5-3.5 3.5 3.5M12 9v6" />
-            </svg>
-          </span>
-        </button>
       </aside>
 
-      <div className="md:ml-[88px]">
+      <div className="md:ml-[76px] xl:ml-[88px]">
         <header className="border-b border-[#c7d5cf] bg-[#eef3f1]/90 backdrop-blur">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 md:px-8">
             <div className="flex items-center gap-3">
@@ -349,6 +336,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         <main>{children}</main>
       </div>
+      <JumpToTop />
       <OnboardingTour />
     </div>
   );

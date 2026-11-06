@@ -144,7 +144,8 @@ main {
 }
 
 .app-rail {
-  @apply fixed left-0 top-0 z-40 h-screen w-[88px] flex-col border-r;
+  @apply fixed left-0 top-0 z-40 h-screen flex-col border-r;
+  width: 76px;
   border-color: rgba(255, 255, 255, 0.12);
   background:
     radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.12) 0%, transparent 55%),
@@ -152,11 +153,28 @@ main {
   box-shadow: 8px 0 30px rgba(22, 36, 31, 0.25);
 }
 
+@media (min-width: 1280px) {
+  .app-rail {
+    width: 88px;
+  }
+}
+
 .app-rail__brand {
-  @apply mx-auto mt-5 flex h-12 w-12 items-center justify-center rounded-2xl border text-base font-bold text-white;
+  @apply mx-auto flex shrink-0 items-center justify-center rounded-2xl border text-base font-bold text-white;
+  margin-top: 16px;
+  height: 40px;
+  width: 40px;
   border-color: rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(8px);
+}
+
+@media (min-width: 1280px) {
+  .app-rail__brand {
+    margin-top: 20px;
+    height: 48px;
+    width: 48px;
+  }
 }
 
 .app-rail__brand--logo {
@@ -164,18 +182,45 @@ main {
 }
 
 .app-rail__brand-image {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   object-fit: contain;
   filter: brightness(0) invert(1);
 }
 
+@media (min-width: 1280px) {
+  .app-rail__brand-image {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* The nav must never overflow the fixed rail on short laptop screens:
+   it scrolls internally, so every navigation item stays reachable. */
 .app-rail__nav {
-  @apply mt-8 flex flex-1 flex-col items-center gap-2 px-2;
+  @apply mt-4 flex min-h-0 flex-1 flex-col items-center px-2 py-2;
+  gap: 6px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.app-rail__nav::-webkit-scrollbar {
+  display: none;
+}
+
+@media (min-width: 1280px) {
+  .app-rail__nav {
+    margin-top: 32px;
+    gap: 8px;
+  }
 }
 
 .app-rail__item {
-  @apply relative flex w-full flex-col items-center gap-1.5 rounded-2xl py-2.5 text-center text-[10px] font-semibold uppercase tracking-[0.08em] text-[#bcd2c9] transition-all;
+  @apply relative flex w-full shrink-0 flex-col items-center rounded-2xl py-2 text-center font-semibold uppercase text-[#bcd2c9] transition-all;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .app-rail__item:hover {
@@ -189,8 +234,18 @@ main {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
 }
 
+@media (min-width: 1280px) {
+  .app-rail__item {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    gap: 6px;
+  }
+}
+
 .app-rail__glyph {
-  @apply flex h-8 w-8 items-center justify-center rounded-xl;
+  @apply flex h-7 w-7 shrink-0 items-center justify-center rounded-xl;
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
@@ -199,6 +254,13 @@ main {
   background: rgba(30, 47, 41, 0.1);
   border-color: transparent;
   color: #1e2f29;
+}
+
+@media (min-width: 1280px) {
+  .app-rail__glyph {
+    height: 32px;
+    width: 32px;
+  }
 }
 
 .app-rail__label {

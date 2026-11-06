@@ -1,11 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import { getConfiguredSiteUrl } from "@/lib/supabase-server";
+import { firstPasswordIssue } from "@/lib/password";
 
 type RegistrationBody = {
   firstName?: unknown;
   lastName?: unknown;
   email?: unknown;
   password?: unknown;
+  acceptedTerms?: unknown;
 };
 
 function getServerEnv() {
@@ -56,8 +58,16 @@ export async function POST(request: Request) {
       return Response.json({ error: "Please enter a valid email address." }, { status: 400 });
     }
 
-    if (password.length < 8) {
-      return Response.json({ error: "Password must be at least 8 characters long." }, { status: 400 });
+    const passwordIssue = firstPasswordIssue(password);
+    if (passwordIssue) {
+      return Response.json({ error: passwordIssue }, { status: 400 });
+    }
+
+    if (body.acceptedTerms !== true) {
+      return Response.json(
+        { error: "You must agree to the Terms and Conditions and acknowledge the Privacy Notice." },
+        { status: 400 }
+      );
     }
 
     let url: string;

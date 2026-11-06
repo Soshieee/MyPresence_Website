@@ -5,7 +5,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import AppNotification, { AppNotificationTone } from "@/components/app-notification";
+import LegalDocumentModal from "@/components/legal-document-modal";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
+import { firstPasswordIssue, passwordRequirementStatuses } from "@/lib/password";
+import {
+  PRIVACY_LAST_UPDATED,
+  privacySections,
+  TERMS_LAST_UPDATED,
+  termsSections
+} from "@/lib/legal-content";
 
 type LoginApiResult = {
   ok?: boolean;
@@ -54,6 +62,10 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [signupConsent, setSignupConsent] = useState(false);
+  const [termsViewed, setTermsViewed] = useState(false);
+  const [privacyViewed, setPrivacyViewed] = useState(false);
+  const [legalModal, setLegalModal] = useState<"terms" | "privacy" | null>(null);
   const [verificationCode, setVerificationCode] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -122,6 +134,10 @@ export default function LoginPage() {
     setPassword("");
     setConfirmPassword("");
     setShowPassword(false);
+    setSignupConsent(false);
+    setTermsViewed(false);
+    setPrivacyViewed(false);
+    setLegalModal(null);
     resetFeedback();
   };
 
@@ -232,13 +248,19 @@ export default function LoginPage() {
         setSubmitting(false);
         return;
       }
-      if (password.length < 8) {
-        setError("Password must be at least 8 characters long.");
+      const passwordIssue = firstPasswordIssue(password);
+      if (passwordIssue) {
+        setError(passwordIssue);
         setSubmitting(false);
         return;
       }
       if (password !== confirmPassword) {
         setError("Passwords do not match.");
+        setSubmitting(false);
+        return;
+      }
+      if (!signupConsent) {
+        setError("You must agree to the Terms and Conditions and acknowledge the Privacy Notice before creating an account.");
         setSubmitting(false);
         return;
       }
@@ -250,7 +272,8 @@ export default function LoginPage() {
           firstName: firstName.trim(),
           lastName: lastName.trim(),
           email: email.trim(),
-          password
+          password,
+          acceptedTerms: signupConsent
         })
       });
       const result = await response.json().catch(() => ({}));
@@ -460,11 +483,96 @@ export default function LoginPage() {
                       {showPassword ? "Hide" : "Show"}
                     </button>
                   </div>
+                  {mode === "signup" ? (
+                    <ul className="mt-2.5 grid gap-1.5" aria-label="Password requirements">
+                      {passwordRequirementStatuses(password).map((requirement) => (
+                        <li key={requirement.key} className="flex items-center gap-2 text-xs">
+                          <span
+                            aria-hidden="true"
+                            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                              requirement.met
+                                ? "border-[#385b4f] bg-[#385b4f] text-white"
+                                : "border-[#b9cac3] bg-white text-transparent"
+                            }`}
+                          >
+                            <svg viewBox="0 0 24 24" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="3.5">
+                              <path d="m5 12 4.5 4.5L19 7" />
+                            </svg>
+                          </span>
+                          <span className={requirement.met ? "font-semibold text-[#315349]" : "text-[#6a7e76]"}>
+                            {requirement.label}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
                 {mode === "signup" ? (
                   <div>
                     <label className="field-label" htmlFor="confirm-password">Confirm Password</label>
                     <input id="confirm-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="field-input" type={showPassword ? "text" : "password"} required autoComplete="new-password" />
+                  </div>
+                ) : null}
+                {mode === "signup" ? (
+                  <div className="rounded-xl border border-[#c8d6d1] bg-[#f7fbf9] px-3 py-2.5">
+                    <p className="field-label">Review before continuing</p>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => setLegalModal("terms")}
+                        aria-pressed={termsViewed}
+                        className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                          termsViewed
+                            ? "border-[#385b4f] bg-[#eef4f1] text-[#315349]"
+                            : "border-[#c8d6d1] bg-white text-[#35564a] hover:border-[#7d968c]"
+                        }`}
+                      >
+                        {termsViewed ? (
+                          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="3">
+                            <path d="m5 12 4.5 4.5L19 7" />
+                          </svg>
+                        ) : null}
+                        {termsViewed ? "Terms reviewed" : "Review Terms and Conditions"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLegalModal("privacy")}
+                        aria-pressed={privacyViewed}
+                        className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                          privacyViewed
+                            ? "border-[#385b4f] bg-[#eef4f1] text-[#315349]"
+                            : "border-[#c8d6d1] bg-white text-[#35564a] hover:border-[#7d968c]"
+                        }`}
+                      >
+                        {privacyViewed ? (
+                          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="3">
+                            <path d="m5 12 4.5 4.5L19 7" />
+                          </svg>
+                        ) : null}
+                        {privacyViewed ? "Privacy reviewed" : "Review Privacy Notice"}
+                      </button>
+                    </div>
+                    <div className="mt-2.5 flex items-start gap-2.5">
+                      <input
+                        id="signup-consent"
+                        type="checkbox"
+                        checked={signupConsent}
+                        onChange={(event) => setSignupConsent(event.target.checked)}
+                        disabled={!termsViewed || !privacyViewed}
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-[#385b4f] disabled:opacity-50"
+                      />
+                      <label
+                        htmlFor="signup-consent"
+                        className={`text-xs leading-5 ${termsViewed && privacyViewed ? "text-[#425b52]" : "text-[#8a9a93]"}`}
+                      >
+                        I have read and agree to the Terms and Conditions and acknowledge the Privacy Notice.
+                      </label>
+                    </div>
+                    {!termsViewed || !privacyViewed ? (
+                      <p className="mt-2 text-[11px] font-semibold text-[#7a5a17]">
+                        Open and read both documents to unlock the agreement checkbox.
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
               </>
@@ -475,7 +583,7 @@ export default function LoginPage() {
             <button
               type="submit"
               className="btn-primary w-full"
-              disabled={submitting || !hasSupabaseEnv || (mode === "login" && lockoutRemaining > 0)}
+              disabled={submitting || !hasSupabaseEnv || (mode === "login" && lockoutRemaining > 0) || (mode === "signup" && !signupConsent)}
             >
               {mode === "login" && lockoutRemaining > 0
                 ? `Try again in ${formatCountdown(lockoutRemaining)}`
@@ -585,6 +693,15 @@ export default function LoginPage() {
         </form>
       </section>
       {notification ? <AppNotification tone={notification.tone} message={notification.message} onDismiss={() => setNotification(null)} /> : null}
+      {legalModal ? (
+        <LegalDocumentModal
+          title={legalModal === "terms" ? "Terms and Conditions" : "Privacy Notice"}
+          lastUpdated={legalModal === "terms" ? TERMS_LAST_UPDATED : PRIVACY_LAST_UPDATED}
+          sections={legalModal === "terms" ? termsSections : privacySections}
+          onClose={() => setLegalModal(null)}
+          onReachedEnd={() => (legalModal === "terms" ? setTermsViewed(true) : setPrivacyViewed(true))}
+        />
+      ) : null}
     </div>
   );
 }

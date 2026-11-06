@@ -10,6 +10,7 @@ import {
   normalizeAttendanceType,
   normalizeServiceType
 } from "@/lib/attendance";
+import AttendanceHistoryList from "@/components/attendance-history-list";
 
 type MemberRow = {
   id: string;
@@ -618,30 +619,34 @@ export default function MembersPage() {
             <h2 className="font-[var(--font-heading)] text-xl text-[#22332d]">Attendance History: {historyMember.full_name}</h2>
             <button type="button" className="btn-ghost" onClick={() => setHistoryMember(null)}>Close</button>
           </div>
-          <div className="mt-3 space-y-2">
-            {historyLoading ? (
-              <p className="text-sm text-[#4f675e]">Loading history...</p>
-            ) : historyRows.length === 0 ? (
-              <p className="text-sm text-[#4f675e]">No attendance history found.</p>
-            ) : (
-              historyRows.map((row) => (
-                <div key={row.id} className="rounded-xl border border-[#c7d5cf] bg-white/85 px-3 py-2 text-sm text-[#2f4d43]">
-                  <p className="font-semibold">{row.attended_date} • {new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
-                  <p className="text-xs text-[#5e766c]">
-                    {(() => {
-                      const type = normalizeAttendanceType(row.attendance_context, row.attendance_group);
-                      const session = normalizeServiceType(
-                        type,
-                        row.service_type,
-                        row.attendance_group
-                      );
-                      return `${type ?? "Unknown"}${session ? ` • ${session}` : ""}`;
-                    })()}
-                    {row.event_id ? ` • ${eventLookup[row.event_id] ?? "Linked Event"}` : " • No event"}
-                  </p>
-                </div>
-              ))
-            )}
+          <div className="mt-3">
+            <AttendanceHistoryList
+              entries={historyRows.map((row) => {
+                const type = normalizeAttendanceType(row.attendance_context, row.attendance_group);
+                const session = normalizeServiceType(
+                  type,
+                  row.service_type,
+                  row.attendance_group
+                );
+                return {
+                  id: row.id,
+                  badge: type ?? null,
+                  title: `${new Date(`${row.attended_date}T00:00:00`).toLocaleDateString(undefined, {
+                    month: "2-digit",
+                    day: "2-digit",
+                    year: "2-digit"
+                  })} • ${new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+                  detail: `${type ?? "Unknown"}${session ? ` • ${session}` : ""}${
+                    row.event_id ? ` • ${eventLookup[row.event_id] ?? "Linked Event"}` : " • No event"
+                  }`
+                };
+              })}
+              emptyText="No attendance history found."
+              loading={historyLoading}
+              loadingText="Loading history..."
+              resetKey={historyMember?.id ?? ""}
+              ariaLabel={`Attendance history for ${historyMember?.full_name ?? "member"}`}
+            />
           </div>
         </section>
       ) : null}

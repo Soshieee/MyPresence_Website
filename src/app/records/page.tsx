@@ -1100,6 +1100,71 @@ export default function AttendanceRecordsPage() {
       })
       .sort((a, b) => a.name.localeCompare(b.name));
 
+    // Per-member attendance comparison for a selected lifegroup: attended vs
+    // eligible activities in range, percentage, and a chronological trend.
+    // Zero-attendance members are included so nobody silently disappears.
+    const selectedGroup = scopedGroups.find((group) => group.id === selectedLifegroupId) ?? null;
+    let memberComparison: {
+      groupName: string;
+      totalAttendance: number;
+      averagePercent: number;
+      rows: Array<{
+        userId: string;
+        name: string;
+        role: string;
+        status: string;
+        attended: number;
+        eligible: number;
+        percent: number;
+        trend: Array<{ label: string; value: number }>;
+      }>;
+    } | null = null;
+
+    if (selectedGroup) {
+      const groupActivities = activitiesInRange
+        .filter((activity) => activity.lifegroup_id === selectedGroup.id)
+        .sort((a, b) => (activityDate(a) ?? "").localeCompare(activityDate(b) ?? ""))
+        .slice(-10);
+      const groupMemberRows = membershipsByGroup.get(selectedGroup.id) ?? [];
+      const groupPresentRows = presentRows.filter((row) => row.lifegroupId === selectedGroup.id);
+
+      const comparisonRows = groupMemberRows
+        .map((membership) => {
+          const memberPresentKeys = new Set(
+            groupPresentRows
+              .filter((row) => row.userId === membership.user_id)
+              .map((row) => row.activityId ?? `date:${row.date ?? ""}`)
+          );
+          const eligible = groupActivities.length;
+          const attended = memberPresentKeys.size;
+
+          return {
+            userId: membership.user_id,
+            name: displayProfileName(profileById.get(membership.user_id)),
+            role: membership.role ?? "member",
+            status: membership.status ?? "unknown",
+            attended,
+            eligible,
+            percent: eligible > 0 ? Math.round((attended / eligible) * 100) : 0,
+            trend: groupActivities.map((activity) => ({
+              label: activityDate(activity)?.slice(5) ?? "—",
+              value: memberPresentKeys.has(activity.id) ? 1 : 0
+            }))
+          };
+        })
+        .sort((a, b) => b.attended - a.attended || a.name.localeCompare(b.name));
+
+      memberComparison = {
+        groupName: selectedGroup.name,
+        totalAttendance: groupPresentRows.length,
+        averagePercent:
+          comparisonRows.length > 0
+            ? Math.round(comparisonRows.reduce((sum, row) => sum + row.percent, 0) / comparisonRows.length)
+            : 0,
+        rows: comparisonRows
+      };
+    }
+
     const recentActivities = activitiesInRange
       .map((activity) => {
         const group = groupById.get(activity.lifegroup_id);
@@ -1143,6 +1208,7 @@ export default function AttendanceRecordsPage() {
       rsvpBreakdown,
       perGroup,
       members,
+      memberComparison,
       recentActivities,
       reportAttendanceAvailable: reportAttendanceByActivity.size > 0 || reportAttendanceByGroup.size > 0
     };
@@ -1726,6 +1792,81 @@ export default function AttendanceRecordsPage() {
                   </tbody>
                 </table>
               </div>
+            </section>
+          ) : null}
+
+          {lifegroupAnalytics.memberComparison ? (
+            <section className="analytics-panel">
+              <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">
+                Member Attendance Comparison — {lifegroupAnalytics.memberComparison.groupName}
+              </h2>
+              <p className="mt-1 text-sm text-[#5d7269]">
+                {lifegroupAnalytics.memberComparison.rows.length}{" "}
+                {lifegroupAnalytics.memberComparison.rows.length === 1 ? "member" : "members"} • total attendance{" "}
+                {lifegroupAnalytics.memberComparison.totalAttendance} • average attendance{" "}
+                {lifegroupAnalytics.memberComparison.averagePercent}%
+              </p>
+
+              {lifegroupAnalytics.memberComparison.rows.length === 0 ? (
+                <p className="mt-4 text-sm text-[#4f675e]">
+                  No members belong to this lifegroup yet, so there is nothing to compare.
+                </p>
+              ) : (
+                <>
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="w-full min-w-[680px] border-collapse text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
+                          <th className="px-2 py-2">Rank</th>
+                          <th className="px-2 py-2">Member</th>
+                          <th className="px-2 py-2 text-right">Attended</th>
+                          <th className="px-2 py-2 text-right">Eligible</th>
+                          <th className="px-2 py-2 text-right">Attendance %</th>
+                          <th className="px-2 py-2">Share of period</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {lifegroupAnalytics.memberComparison.rows.map((row, index) => (
+                          <tr key={row.userId} className="border-b border-[#edf2ef] last:border-0">
+                            <td className="px-2 py-2.5 font-semibold text-[#315349]">#{index + 1}</td>
+                            <td className="px-2 py-2.5">
+                              <p className="font-semibold text-[#2f4d43]">{row.name}</p>
+                              <p className="text-xs capitalize text-[#5e766c]">
+                                {row.role} • {row.status}
+                              </p>
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-[#315349]">{row.attended}</td>
+                            <td className="px-2 py-2.5 text-right text-[#5e766c]">{row.eligible}</td>
+                            <td className="px-2 py-2.5 text-right font-semibold text-[#315349]">{row.percent}%</td>
+                            <td className="px-2 py-2.5">
+                              <div className="h-2 w-full min-w-[120px] overflow-hidden rounded-full bg-[#e8f0ec]">
+                                <div
+                                  className="h-full rounded-full bg-[#385b4f] transition-[width] duration-300"
+                                  style={{ width: `${row.percent}%` }}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <h3 className="mt-6 font-[var(--font-heading)] text-base text-[#23332d]">
+                    Attendance trend per member
+                  </h3>
+                  <div className="mt-3 grid gap-4 lg:grid-cols-2">
+                    {lifegroupAnalytics.memberComparison.rows.map((row) => (
+                      <LineChart
+                        key={row.userId}
+                        title={`${row.name} — ${row.percent}%`}
+                        items={row.trend}
+                        emptyText="No attendance recorded in this period yet."
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
           ) : null}
 

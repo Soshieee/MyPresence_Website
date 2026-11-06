@@ -4,7 +4,8 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } fro
 import Image from "next/image";
 import AppNotification, { AppNotificationTone } from "@/components/app-notification";
 import CalendarImage from "@/components/calendar-image";
-import PollPieChart from "@/components/poll-pie-chart";
+import PollResultsList from "@/components/poll-results-list";
+import AttendanceHistoryList from "@/components/attendance-history-list";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import {
   createPollChoice,
@@ -77,7 +78,6 @@ type PollDraftEditorProps = {
   onChange: (draft: ReturnType<typeof createPollDraft>) => void;
   onRemove: () => void;
   scheduleReady: boolean;
-  hashtags: SocialHashtag[];
   removeLabel?: string;
 };
 
@@ -138,11 +138,11 @@ function memberDenominatorFor(eventType: EventType | null, counts: MemberCounts 
   }
 
   if (eventType === "Women's Network") {
-    return { count: counts.female, label: "female members" };
+    return { count: counts.female, label: "active members" };
   }
 
   if (eventType === "Men's Network") {
-    return { count: counts.male, label: "male members" };
+    return { count: counts.male, label: "active members" };
   }
 
   return { count: counts.active, label: "active members" };
@@ -336,7 +336,6 @@ function PollDraftEditor({
   onChange,
   onRemove,
   scheduleReady,
-  hashtags,
   removeLabel = "Remove poll"
 }: PollDraftEditorProps) {
   const updateChoice = (choiceKey: string, text: string) => {
@@ -405,11 +404,6 @@ function PollDraftEditor({
         Times use this device&apos;s local timezone. Leave the start blank to open the poll immediately. Leave the end
         blank to keep it open until you close it manually.
       </p>
-      <HashtagPicker
-        hashtags={hashtags}
-        selectedIds={draft.hashtagIds}
-        onChange={(hashtagIds) => onChange({ ...draft, hashtagIds })}
-      />
       {!scheduleReady ? (
         <p className="mt-2 rounded-lg border border-[#e3c98f] bg-[#fdf6e6] px-3 py-2 text-xs font-semibold text-[#7a5a17]">
           Poll schedules need supabase/patch_2026_11_02_poll_name_schedule.sql. Poll labels always use the event type.
@@ -463,7 +457,6 @@ function PollResultCard({
   total,
   memberCount,
   memberLabel,
-  hashtags,
   onEdit,
   onStatusChange,
   onDelete
@@ -474,7 +467,6 @@ function PollResultCard({
   total: number;
   memberCount: number;
   memberLabel: string;
-  hashtags: SocialHashtag[];
   onEdit: () => void;
   onStatusChange: (status: PollStatus) => void;
   onDelete: () => void;
@@ -522,18 +514,6 @@ function PollResultCard({
             {" • "}
             {endsAtLabel ? `Ends ${endsAtLabel}` : "No end time"}
           </p>
-          {poll.hashtagIds.length ? (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {poll.hashtagIds.map((id) => {
-                const hashtag = hashtags.find((item) => item.id === id);
-                return hashtag ? (
-                  <span key={id} className="rounded-full bg-[#edf5f2] px-2 py-1 text-[10px] font-semibold text-[#406357]">
-                    {displayHashtag(hashtag.name)}
-                  </span>
-                ) : null;
-              })}
-            </div>
-          ) : null}
           <div className="mt-2 space-y-2">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#7a8b84]">Poll question</p>
@@ -575,7 +555,7 @@ function PollResultCard({
         {pieSlices.length === 0 ? (
           <p className="text-sm text-[#5e766c]">No active options. Edit this poll to add options.</p>
         ) : (
-          <PollPieChart slices={pieSlices} memberCount={memberCount} memberLabel={memberLabel} />
+          <PollResultsList slices={pieSlices} memberCount={memberCount} memberLabel={memberLabel} />
         )}
       </div>
 
@@ -2162,7 +2142,6 @@ export default function EventsManagerPage() {
                     setNewEventPolls((previous) => previous.filter((item) => item.key !== poll.key))
                   }
                   scheduleReady={pollScheduleReady}
-                  hashtags={hashtags}
                 />
               ))}
             </div>
@@ -2400,22 +2379,19 @@ export default function EventsManagerPage() {
               <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-[#4f675e]">Event Attendance</h3>
               <p className="mt-1 font-[var(--font-heading)] text-2xl text-[#23332d]">{selectedEventAttendance.length}</p>
               {attendanceStatus ? <p className="mt-2 text-xs font-semibold text-[#7a3237]">{attendanceStatus}</p> : null}
-              <div className="mt-3 space-y-2">
-                {selectedEventAttendance.length === 0 ? (
-                  <p className="text-sm text-[#5e766c]">No scans linked to this event yet.</p>
-                ) : (
-                  selectedEventAttendance.slice(0, 6).map((row) => (
-                    <div key={row.id} className="flex items-center justify-between rounded-xl border border-[#cbd8d3] bg-white px-3 py-2 text-sm text-[#2f4d43]">
-                      <div>
-                        <p className="font-semibold">{row.full_name}</p>
-                        <p className="text-xs text-[#5e766c]">{row.student_id} • {row.attendance_group ?? "-"}</p>
-                      </div>
-                      <p className="text-xs font-semibold text-[#4f675e]">
-                        {new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </p>
-                    </div>
-                  ))
-                )}
+              <div className="mt-3">
+                <AttendanceHistoryList
+                  entries={selectedEventAttendance.map((row) => ({
+                    id: row.id,
+                    badge: row.attendance_group ?? null,
+                    title: row.full_name,
+                    detail: row.student_id,
+                    meta: new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                  }))}
+                  emptyText="No scans linked to this event yet."
+                  resetKey={selectedEventId ?? ""}
+                  ariaLabel="Event attendance"
+                />
               </div>
             </div>
 
@@ -2461,7 +2437,6 @@ export default function EventsManagerPage() {
                     total={pollVoteTotal(poll)}
                     memberCount={memberDenominator.count}
                     memberLabel={memberDenominator.label}
-                    hashtags={hashtags}
                     onEdit={() => startEditingPoll(poll)}
                     onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
                     onDelete={() => requestDeletePoll(poll)}
@@ -2490,7 +2465,6 @@ export default function EventsManagerPage() {
                           total={pollVoteTotal(poll)}
                           memberCount={memberDenominator.count}
                           memberLabel={memberDenominator.label}
-                          hashtags={hashtags}
                           onEdit={() => startEditingPoll(poll)}
                           onStatusChange={(nextStatus) => void changePollStatus(poll, nextStatus)}
                           onDelete={() => requestDeletePoll(poll)}
@@ -2517,7 +2491,6 @@ export default function EventsManagerPage() {
                     onChange={setEditingPoll}
                     onRemove={() => setEditingPoll(null)}
                     scheduleReady={pollScheduleReady}
-                    hashtags={hashtags}
                     removeLabel="Cancel"
                   />
                   <button type="submit" className="btn-primary">Save changes</button>
@@ -2553,7 +2526,6 @@ export default function EventsManagerPage() {
                         setAdditionalPolls((previous) => previous.filter((item) => item.key !== poll.key))
                       }
                       scheduleReady={pollScheduleReady}
-                      hashtags={hashtags}
                     />
                   ))}
                   <button type="submit" className="btn-primary">Save polls</button>
