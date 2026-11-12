@@ -14,8 +14,9 @@ const headingFont = Sora({
 });
 
 export const metadata: Metadata = {
-  title: "Face Attendance System",
-  description: "Web-based face recognition attendance with Next.js, face-api.js, and Supabase"
+  title: "MyPresence — HPCI Thrive",
+  description:
+    "Data-driven attendance, event evaluation, and organizational decision support for HPCI Thrive. Face-recognition scanning, analytics, and automated insights."
 };
 
 export default function RootLayout({

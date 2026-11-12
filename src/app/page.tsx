@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import CalendarImage from "@/components/calendar-image";
@@ -11,6 +11,23 @@ import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 import { isMissingEventTypeColumnError } from "@/lib/attendance";
 import { toLocalDateInput } from "@/lib/date";
+import {
+  INSIGHT_ATTENDANCE_DROP_PCT,
+  INSIGHT_LOW_RATING,
+  INSIGHT_MEMBER_BASELINE_DAYS,
+  INSIGHT_MEMBER_BASELINE_MIN,
+  INSIGHT_MEMBER_INACTIVE_DAYS,
+  INSIGHT_MIN_CHECKINS_PER_WINDOW,
+  INSIGHT_MIN_RESPONSES,
+  attendanceDropInsights,
+  dataQualityInsights,
+  lowRatingInsights,
+  memberDeclineInsights,
+  recurringWeakSummaryInsights,
+  type Insight,
+  type InsightAttendanceRow
+} from "@/lib/insights";
+import type { EventFeedbackSummary } from "@/components/event-feedback";
 
 type AnalyticsView = "mix" | "eventAttendance" | "newcomerAttendance";
 const MIN_ANALYTICS_DATE = "2026-01-01";
@@ -45,6 +62,12 @@ export default function HomePage() {
   const [status, setStatus] = useState("Loading dashboard analytics...");
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
   const [eventPage, setEventPage] = useState(0);
+  // P7 — automated insights (admin-gated)
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [insightsStatus, setInsightsStatus] = useState<"loading" | "ready">("loading");
+  const [insightsNotice, setInsightsNotice] = useState("");
+  const insightsLoadedRef = useRef(false);
 
   const range = useMemo(() => {
     const today = new Date();
@@ -62,6 +85,59 @@ export default function HomePage() {
   }, [events]);
 
   useEffect(() => {
+    if (!hasSupabaseEnv) return;
+    let active = true;
+    void supabase.rpc("is_admin").then(({ data, error }) => {
+      if (active) setIsAdmin(!error && data === true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin || insightsLoadedRef.current) return;
+    insightsLoadedRef.current = true;
+
+    const load = async () => {
+      const todayIso = toLocalDateInput(new Date());
+      const fromIso = toLocalDateInput(new Date(new Date(`${todayIso}T00:00:00`).getTime() - 89 * 86_400_000));
+
+      const [attendanceResult, summaryResult] = await Promise.all([
+        supabase
+          .from("attendance")
+          .select("student_id, attendance_context, attendance_group, attended_date")
+          .gte("attended_date", fromIso),
+        supabase
+          .from("event_feedback_summary")
+          .select(
+            "event_id, total_responses, avg_overall_rating, avg_food_rating, avg_venue_rating, avg_music_rating, avg_program_rating, avg_staff_rating, avg_speaker_rating"
+          )
+      ]);
+
+      const rows = (attendanceResult.data ?? []) as InsightAttendanceRow[];
+      const summaries = (summaryResult.data ?? []) as EventFeedbackSummary[];
+
+      const collected = [
+        ...attendanceDropInsights(rows, todayIso),
+        ...memberDeclineInsights(rows, todayIso),
+        ...dataQualityInsights(rows),
+        ...lowRatingInsights(summaries, eventTitleById),
+        ...recurringWeakSummaryInsights(summaries, eventTitleById)
+      ].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "review" ? -1 : 1));
+
+      setInsights(collected);
+      const notice = [attendanceResult.error?.message, summaryResult.error?.message]
+        .filter(Boolean)
+        .join(" ");
+      setInsightsNotice(notice);
+      setInsightsStatus("ready");
+    };
+
+    void load();
+  }, [isAdmin, eventTitleById]);
+
+  useEffect(() => {
     const loadData = async () => {
       if (!hasSupabaseEnv) {
         setStatus(supabaseEnvIssue ?? "Missing Supabase environment values.");
@@ -71,10 +147,12 @@ export default function HomePage() {
       const warnings: string[] = [];
 
       let userRows: UserFace[] = [];
-      const userResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, descriptor, created_at");
+      // descriptor (face embedding) is intentionally not selected here —
+      // only the scanner and enrollment flows may load biometric data.
+      const userResult = await supabase.from("users").select("id, student_id, full_name, age, gender, newcomer, created_at");
       if (userResult.error) {
         if (isMissingUserColumnError(userResult.error.message)) {
-          const fallback = await supabase.from("users").select("id, student_id, full_name, descriptor, created_at");
+          const fallback = await supabase.from("users").select("id, student_id, full_name, created_at");
           if (fallback.error) {
             setStatus(`Failed to load dashboard: ${fallback.error.message}`);
             return;
@@ -325,6 +403,68 @@ export default function HomePage() {
         </div>
         <div className="status-info mt-4">{status}</div>
       </section>
+
+      {isAdmin ? (
+        <section className="analytics-panel" data-tour="automated-insights">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="font-[var(--font-heading)] text-xl text-[#21312b]">Automated Insights</h2>
+              <p className="mt-1 text-sm text-[#5d7269]">
+                Computed automatically on load from the latest data. Flags are review prompts with stated thresholds —
+                the administrator decides.
+              </p>
+            </div>
+            <span className="rounded-full border border-[#d7b46a] bg-[#fff8e8] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a5a17]">
+              Administrator
+            </span>
+          </div>
+
+          {insightsStatus === "loading" ? (
+            <p className="mt-3 status-info">Evaluating monitoring rules...</p>
+          ) : null}
+          {insightsNotice ? <p className="mt-3 status-info">Some data was unavailable: {insightsNotice}</p> : null}
+
+          {insights.length === 0 && insightsStatus === "ready" ? (
+            <p className="mt-3 text-sm text-[#5d736a]">
+              No alerts — all monitored metrics are within their thresholds.
+            </p>
+          ) : null}
+
+          {insights.length > 0 ? (
+            <div className="mt-3 grid gap-2">
+              {insights.map((insight) => (
+                <div
+                  key={insight.id}
+                  className={`rounded-xl border-l-4 px-3 py-2 ${
+                    insight.severity === "review" ? "border-l-[#c2703d] bg-[#fff8f3]" : "border-l-[#b9cac3] bg-white/80"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-[#315349]">{insight.title}</p>
+                    {insight.href ? (
+                      <Link href={insight.href} className="btn-ghost px-2.5 py-1 text-[11px]">
+                        Review
+                      </Link>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-sm text-[#4f675e]">{insight.detail}</p>
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a9a93]">
+                    Rule: {insight.window}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <p className="mt-3 text-[11px] leading-5 text-[#8a9a93]">
+            Monitoring rules: weekly attendance drops ≥ {INSIGHT_ATTENDANCE_DROP_PCT}% per group (min{" "}
+            {INSIGHT_MIN_CHECKINS_PER_WINDOW} check-ins in the earlier week) • members inactive{" "}
+            {INSIGHT_MEMBER_INACTIVE_DAYS}+ days after {INSIGHT_MEMBER_BASELINE_MIN}+ attendances in{" "}
+            {INSIGHT_MEMBER_BASELINE_DAYS} days • event ratings ≤ {INSIGHT_LOW_RATING.toFixed(1)}★ with ≥{" "}
+            {INSIGHT_MIN_RESPONSES} responses • recurring weak categories • legacy and weekday data checks.
+          </p>
+        </section>
+      ) : null}
 
       <section className="analytics-strip">
         <article className="analytics-card">

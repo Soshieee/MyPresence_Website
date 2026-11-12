@@ -11,6 +11,16 @@ import { AttendanceLog, EventItem, UserFace } from "@/types";
 import { loadAppSettings } from "@/lib/app-settings";
 import { extractLivenessMetrics, LivenessGate } from "@/lib/liveness";
 import {
+  KIOSK_BROADCAST_EVENT,
+  KIOSK_CHANNEL,
+  KIOSK_FRAME_EVENT,
+  KIOSK_STATUS_EVENT,
+  toKioskFirstName,
+  toKioskStatusMessage,
+  type KioskScanOutcome
+} from "@/lib/kiosk";
+import { createTickWorker, type TickWorker } from "@/lib/tick-worker";
+import {
   ATTENDANCE_ERROR_MESSAGES,
   ATTENDANCE_TYPES,
   AttendanceType,
@@ -41,7 +51,10 @@ type DetectionWithDescriptor = {
 const FACE_DISTANCE_THRESHOLD = 0.42;
 const FACE_AMBIGUITY_GAP = 0.04;
 const MATCH_CONFIRMATION_FRAMES = 2;
-const MIN_FACE_BOX_WIDTH_PX = 140;
+// "Face is too far" gate, measured in video pixels. Scaled from 140 px at the
+// previous 960-wide source to keep the same physical standing distance now
+// that the camera runs at 1280 wide (140 × 1280/960 ≈ 187).
+const MIN_FACE_BOX_WIDTH_PX = 187;
 const AUTO_MARK_COOLDOWN_MS = 8000;
 const LIVENESS_TIMEOUT_MS = 12000;
 const NO_FACE_RESET_MS = 5000;
@@ -116,6 +129,10 @@ export default function AttendancePage() {
   const livenessGateRef = useRef(new LivenessGate());
   const noFaceSinceRef = useRef<number | null>(null);
   const lastStatusRef = useRef<{ type: ScannerStatusType; message: string; at: number } | null>(null);
+  const kioskChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const tickWorkerRef = useRef<TickWorker | null>(null);
+  const scanTickRef = useRef<(() => void) | null>(null);
+  const frameTickRef = useRef<(() => void) | null>(null);
 
   const [statusType, setStatusType] = useState<ScannerStatusType>("info");
   const [statusMessage, setStatusMessage] = useState("Loading models and known face descriptors...");
@@ -138,6 +155,165 @@ export default function AttendancePage() {
   } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isMirrored, setIsMirrored] = useState(false);
+  // Scanner operations are restricted to administrators. RLS remains the
+  // server-side enforcement; this gate only controls the operator UI.
+  const [adminState, setAdminState] = useState<"checking" | "allowed" | "denied">("checking");
+
+  useEffect(() => {
+    if (!hasSupabaseEnv) {
+      setAdminState("denied");
+      return;
+    }
+
+    let active = true;
+    const checkAdmin = async () => {
+      const { data, error } = await supabase.rpc("is_admin");
+      if (!active) return;
+      setAdminState(!error && data === true ? "allowed" : "denied");
+    };
+
+    void checkAdmin();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // P5 — kiosk display link: publish scan outcomes to the public display.
+  useEffect(() => {
+    if (!hasSupabaseEnv) return;
+    const channel = supabase.channel(KIOSK_CHANNEL);
+    channel.subscribe();
+    kioskChannelRef.current = channel;
+    return () => {
+      kioskChannelRef.current = null;
+      void supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const publishKioskScan = useCallback(
+    (outcome: KioskScanOutcome, fullName: string, contextLabel: string | null) => {
+      const channel = kioskChannelRef.current;
+      if (!channel) return;
+      void channel
+        .send({
+          type: "broadcast",
+          event: KIOSK_BROADCAST_EVENT,
+          payload: {
+            outcome,
+            firstName: toKioskFirstName(fullName),
+            context: contextLabel ? contextLabel.slice(0, 60) : null,
+            at: new Date().toISOString()
+          }
+        })
+        .catch(() => {
+          // Kiosk display is optional; delivery failures never block scanning.
+        });
+    },
+    []
+  );
+
+  // Publish scanner status changes to the kiosk (sanitized for public display).
+  const lastKioskStatusRef = useRef("");
+
+  // Throttling-immune tick driver: background-tab timer throttling does not
+  // apply to Web Workers, so scanning and kiosk streaming keep running while
+  // the operator views the kiosk in another tab or window.
+  useEffect(() => {
+    const tick = createTickWorker(250);
+    tickWorkerRef.current = tick;
+    tick.worker.onmessage = () => {
+      frameTickRef.current?.();
+      scanTickRef.current?.();
+    };
+    return () => {
+      tickWorkerRef.current = null;
+      scanTickRef.current = null;
+      frameTickRef.current = null;
+      tick.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    const message = toKioskStatusMessage(statusMessage);
+    if (!message || message === lastKioskStatusRef.current) return;
+    lastKioskStatusRef.current = message;
+    const channel = kioskChannelRef.current;
+    if (!channel) return;
+    void channel
+      .send({
+        type: "broadcast",
+        event: KIOSK_STATUS_EVENT,
+        payload: { kind: statusType, message, at: new Date().toISOString() }
+      })
+      .catch(() => {
+        // ignore
+      });
+  }, [statusMessage, statusType]);
+
+  // Stream a downscaled live camera preview to the kiosk (~4 fps). The kiosk
+  // never accesses the camera or biometric data — it only shows this stream.
+  const kioskMirrorRef = useRef(isMirrored);
+  kioskMirrorRef.current = isMirrored;
+  useEffect(() => {
+    if (!hasSupabaseEnv) return;
+    let canvas: HTMLCanvasElement | null = null;
+
+    const frameTick = () => {
+      const channel = kioskChannelRef.current;
+      if (!channel) return;
+      const video = webcamRef.current?.video;
+      if (!video || video.readyState < 2 || !video.videoWidth) return;
+
+      if (!canvas) {
+        canvas = document.createElement("canvas");
+        canvas.width = 640;
+        canvas.height = 480;
+      }
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      // Cover-crop the video into the 4:3 preview, mirroring to match the
+      // operator console when the mirror toggle is on.
+      const videoRatio = video.videoWidth / video.videoHeight;
+      const targetRatio = canvas.width / canvas.height;
+      let sx = 0;
+      let sy = 0;
+      let sw = video.videoWidth;
+      let sh = video.videoHeight;
+      if (videoRatio > targetRatio) {
+        sw = video.videoHeight * targetRatio;
+        sx = (video.videoWidth - sw) / 2;
+      } else {
+        sh = video.videoWidth / targetRatio;
+        sy = (video.videoHeight - sh) / 2;
+      }
+
+      context.save();
+      if (kioskMirrorRef.current) {
+        context.translate(canvas.width, 0);
+        context.scale(-1, 1);
+      }
+      context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      context.restore();
+
+      const frame = canvas.toDataURL("image/jpeg", 0.7);
+      if (frame.length > 300_000) return;
+      void channel
+        .send({
+          type: "broadcast",
+          event: KIOSK_FRAME_EVENT,
+          payload: { frame, at: new Date().toISOString() }
+        })
+        .catch(() => {
+          // ignore
+        });
+    };
+
+    frameTickRef.current = frameTick;
+    return () => {
+      frameTickRef.current = null;
+    };
+  }, []);
 
   const statusClass = useMemo(() => {
     if (statusType === "success") return "status-success";
@@ -267,6 +443,8 @@ export default function AttendancePage() {
           return;
         }
 
+        if (adminState !== "allowed") return;
+
         await loadFaceApiModels();
         const settings = loadAppSettings();
         setNewcomerClearCount(settings.newcomerClearScanCount);
@@ -342,7 +520,7 @@ export default function AttendancePage() {
     return () => {
       mounted = false;
     };
-  }, [loadLogsForDate]);
+  }, [adminState, loadLogsForDate]);
 
   useEffect(() => {
     if (!isReady) return;
@@ -544,16 +722,26 @@ export default function AttendancePage() {
         session: targetSession ?? "N/A",
         eventTitle: eventTitleForScan
       });
+      publishKioskScan(
+        "recognized",
+        fullName,
+        targetContext === "Sunday Service" ? (targetGroup ?? targetContext) : targetContext
+      );
     } catch (err: unknown) {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
       const mapped = describeAttendanceDbError(errorMessage);
       setStatusType(mapped?.kind === "duplicate" ? "info" : "error");
       setStatusMessage(mapped?.message ?? `Failed to save attendance: ${errorMessage}`);
+      publishKioskScan(
+        mapped?.kind === "duplicate" ? "duplicate" : "failed",
+        fullName,
+        targetContext === "Sunday Service" ? (targetGroup ?? targetContext) : targetContext
+      );
     } finally {
       setIsSaving(false);
     }
-  }, [events, newcomerClearCount, selectedContext, selectedDate, selectedEventId, selectedGroup, users]);
+  }, [events, newcomerClearCount, publishKioskScan, selectedContext, selectedDate, selectedEventId, selectedGroup, users]);
 
   useEffect(() => {
     if (!isReady || users.length === 0) {
@@ -605,7 +793,8 @@ export default function AttendancePage() {
       }
     };
 
-    const interval = setInterval(() => {
+    let scanTickCounter = 0;
+    const runScanTick = () => {
       if (scanInProgressRef.current) return;
 
       const video = webcamRef.current?.video as HTMLVideoElement | undefined;
@@ -733,12 +922,52 @@ export default function AttendancePage() {
         .finally(() => {
           scanInProgressRef.current = false;
         });
-    }, 500);
+    };
+
+    // Driven by the throttling-immune tick worker; every second tick keeps
+    // the original 500 ms detection cadence.
+    scanTickRef.current = () => {
+      scanTickCounter += 1;
+      if (scanTickCounter % 2 === 0) return;
+      runScanTick();
+    };
 
     return () => {
-      clearInterval(interval);
+      scanTickRef.current = null;
     };
   }, [isReady, knownDescriptors, markAttendance, selectedContext, selectedDate, selectedEventId, selectedGroup, users.length]);
+
+  if (adminState === "checking") {
+    return (
+      <div className="space-y-6 reveal">
+        <section>
+          <h1 className="page-title font-[var(--font-heading)]">Attendance Scanning</h1>
+        </section>
+        <div className="card">
+          <p className="font-[var(--font-heading)] text-lg text-[#22332d]">Checking scanner access...</p>
+          <p className="mt-2 text-sm text-[#5d7269]">Verifying your administrator permissions.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (adminState === "denied") {
+    return (
+      <div className="space-y-6 reveal">
+        <section>
+          <h1 className="page-title font-[var(--font-heading)]">Attendance Scanning</h1>
+        </section>
+        <div className="card">
+          <p className="font-[var(--font-heading)] text-lg text-[#22332d]">Access denied</p>
+          <p className="mt-2 text-sm text-[#5d7269]">
+            Attendance scanning is restricted to administrator accounts. Please contact your system administrator if you
+            believe you should have access.
+          </p>
+          <Link href="/" className="btn-ghost mt-4 inline-block text-xs">Return to Home</Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 reveal">
@@ -901,8 +1130,8 @@ export default function AttendancePage() {
             }}
             videoConstraints={{
               facingMode: "user",
-              width: 960,
-              height: 720
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
             }}
             className={`h-auto w-full rounded-xl border border-[#b9c8c2] shadow-[0_12px_26px_rgba(56,91,79,0.16)] ${
               isMirrored ? "scale-x-[-1]" : ""
@@ -935,6 +1164,26 @@ export default function AttendancePage() {
             ) : (
               <p className="text-sm text-[#4e655d]">No successful match yet.</p>
             )}
+          </div>
+
+          <div className="card space-y-2">
+            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Kiosk Display</h2>
+            <p className="text-xs text-[#5e766c]">
+              Streams the live camera preview and scanner status to the public display, plus scan confirmations —
+              first names only, never IDs or records.
+            </p>
+            <button
+              type="button"
+              className="btn-primary w-full text-xs"
+              onClick={() =>
+                window.open("/attendance/kiosk", "mypresence-kiosk", "popup=true,width=1280,height=800")
+              }
+            >
+              Open Kiosk Display
+            </button>
+            <p className="text-[11px] text-[#71847c]">
+              On the kiosk screen, press Go Fullscreen and keep the display open. Exit anytime via Exit kiosk.
+            </p>
           </div>
         </aside>
       </div>

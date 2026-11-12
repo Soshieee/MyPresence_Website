@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { defaultAppSettings, loadAppSettings, saveAppSettings } from "@/lib/app-settings";
@@ -50,6 +50,23 @@ export default function SettingsPage() {
   const [unlockEmail, setUnlockEmail] = useState("");
   const [unlockFeedback, setUnlockFeedback] = useState<Feedback | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+
+  // P6 — account invitations (administrator-controlled provisioning)
+  type InvitationRow = {
+    id: string;
+    email: string;
+    status: "pending" | "accepted" | "canceled";
+    created_at: string;
+    sent_at: string;
+    accepted_at: string | null;
+    canceled_at: string | null;
+  };
+  const [invitations, setInvitations] = useState<InvitationRow[]>([]);
+  const [invitationsLoading, setInvitationsLoading] = useState(false);
+  const [invitationsFeedback, setInvitationsFeedback] = useState<Feedback | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
 
   useEffect(() => {
     const settings = loadAppSettings();
@@ -121,6 +138,124 @@ export default function SettingsPage() {
       active = false;
     };
   }, []);
+
+  // P6 — account invitations
+  const loadInvitations = useCallback(async () => {
+    setInvitationsLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token ?? "";
+      const response = await fetch("/api/auth/invitations", {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        invitations?: InvitationRow[];
+        error?: string;
+      };
+      if (!response.ok) {
+        setInvitationsFeedback({ tone: "error", message: result.error ?? "Invitations could not be loaded." });
+        return;
+      }
+      setInvitations(result.invitations ?? []);
+      setInvitationsFeedback(null);
+    } catch {
+      setInvitationsFeedback({ tone: "error", message: "Invitations could not be loaded." });
+    } finally {
+      setInvitationsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    void loadInvitations();
+  }, [isAdmin, loadInvitations]);
+
+  const sendInvitation = async () => {
+    const email = inviteEmail.trim();
+    if (!email) return;
+    setInviteBusy(true);
+    setInvitationsFeedback(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token ?? "";
+      const response = await fetch("/api/auth/invite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ email })
+      });
+      const result = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+      if (!response.ok) {
+        setInvitationsFeedback({ tone: "error", message: result.error ?? "The invitation could not be sent." });
+        return;
+      }
+      setInviteEmail("");
+      setInvitationsFeedback({ tone: "success", message: result.message ?? "Invitation sent." });
+      await loadInvitations();
+    } catch {
+      setInvitationsFeedback({ tone: "error", message: "The invitation could not be sent." });
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
+  const cancelInvitation = async (invitation: InvitationRow) => {
+    setBusyInvitationId(invitation.id);
+    setInvitationsFeedback(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token ?? "";
+      const response = await fetch("/api/auth/invitations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ id: invitation.id, action: "cancel" })
+      });
+      const result = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+      setInvitationsFeedback(
+        response.ok
+          ? { tone: "success", message: result.message ?? "Invitation canceled." }
+          : { tone: "error", message: result.error ?? "The invitation could not be canceled." }
+      );
+      if (response.ok) await loadInvitations();
+    } catch {
+      setInvitationsFeedback({ tone: "error", message: "The invitation could not be canceled." });
+    } finally {
+      setBusyInvitationId(null);
+    }
+  };
+
+  const resendInvitation = async (invitation: InvitationRow) => {
+    setBusyInvitationId(invitation.id);
+    setInvitationsFeedback(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token ?? "";
+      const response = await fetch("/api/auth/invite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ email: invitation.email })
+      });
+      const result = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+      setInvitationsFeedback(
+        response.ok
+          ? { tone: "success", message: result.message ?? "Invitation re-sent." }
+          : { tone: "error", message: result.error ?? "The invitation could not be re-sent." }
+      );
+      if (response.ok) await loadInvitations();
+    } catch {
+      setInvitationsFeedback({ tone: "error", message: "The invitation could not be re-sent." });
+    } finally {
+      setBusyInvitationId(null);
+    }
+  };
 
   const settingsDirty = newcomerClearScanCount !== savedNewcomerClearScanCount;
 
@@ -421,6 +556,140 @@ export default function SettingsPage() {
               {unlockFeedback.message}
             </p>
           ) : null}
+        </section>
+      ) : null}
+
+      {isAdmin ? (
+        <section className="analytics-panel">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="font-[var(--font-heading)] text-xl text-[#22332d]">Account Invitations</h2>
+              <p className="mt-1 text-sm text-[#5d7269]">
+                Invite new console accounts. The recipient receives an activation link by email and sets their own
+                password. Invited accounts become administrators as soon as they activate — only invite people you
+                trust.
+              </p>
+            </div>
+            <span className="rounded-full border border-[#d7b46a] bg-[#fff8e8] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a5a17]">
+              Administrator
+            </span>
+          </div>
+
+          <form
+            className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void sendInvitation();
+            }}
+          >
+            <div>
+              <label className="field-label" htmlFor="invite-account-email">
+                New account email
+              </label>
+              <input
+                id="invite-account-email"
+                className="field-input"
+                type="email"
+                value={inviteEmail}
+                onChange={(event) => setInviteEmail(event.target.value)}
+                placeholder="member@example.com"
+                autoComplete="email"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={inviteBusy || !inviteEmail.trim()}
+            >
+              {inviteBusy ? "Sending..." : "Send Invitation"}
+            </button>
+          </form>
+
+          {invitationsFeedback ? (
+            <p className={`${feedbackClass(invitationsFeedback.tone)} mt-3`} role="status">
+              {invitationsFeedback.message}
+            </p>
+          ) : null}
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
+                  <th className="px-2 py-2">Email</th>
+                  <th className="px-2 py-2">Status</th>
+                  <th className="px-2 py-2">Sent</th>
+                  <th className="px-2 py-2">Accepted</th>
+                  <th className="px-2 py-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invitations.map((invitation) => (
+                  <tr key={invitation.id} className="border-b border-[#edf2ef] last:border-0">
+                    <td className="px-2 py-3 font-semibold text-[#2f4d43]">{invitation.email}</td>
+                    <td className="px-2 py-3">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          invitation.status === "accepted"
+                            ? "bg-[#e2f3ea] text-[#1f6b4f]"
+                            : invitation.status === "canceled"
+                              ? "bg-[#f4e7e7] text-[#8a3f46]"
+                              : "bg-[#fff4dd] text-[#8a5a17]"
+                        }`}
+                      >
+                        {invitation.status}
+                      </span>
+                    </td>
+                    <td className="px-2 py-3 text-[#5e766c]">{formatTimestamp(invitation.sent_at)}</td>
+                    <td className="px-2 py-3 text-[#5e766c]">{formatTimestamp(invitation.accepted_at)}</td>
+                    <td className="px-2 py-3 text-right">
+                      {invitation.status === "pending" ? (
+                        <span className="inline-flex gap-2">
+                          <button
+                            type="button"
+                            className="btn-ghost px-2.5 py-1 text-[11px]"
+                            disabled={busyInvitationId === invitation.id}
+                            onClick={() => void resendInvitation(invitation)}
+                          >
+                            Resend
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-ghost px-2.5 py-1 text-[11px] text-[#8a3f46]"
+                            disabled={busyInvitationId === invitation.id}
+                            onClick={() => void cancelInvitation(invitation)}
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-[#9aa8a1]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {invitationsLoading && invitations.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-2 py-6 text-center text-sm text-[#71847c]">
+                      Loading invitations...
+                    </td>
+                  </tr>
+                ) : null}
+                {!invitationsLoading && invitations.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-2 py-6 text-center text-sm text-[#71847c]">
+                      No invitations yet. Send one above to create a new console account.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="mt-3 text-xs leading-5 text-[#6a7e76]">
+            Activation links are generated by Supabase Auth and delivered through the project email (Brevo SMTP).
+            Canceling a pending invitation also removes the unused account so the link can never be used later.
+          </p>
         </section>
       ) : null}
 

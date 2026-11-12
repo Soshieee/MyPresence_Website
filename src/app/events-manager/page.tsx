@@ -6,6 +6,16 @@ import AppNotification, { AppNotificationTone } from "@/components/app-notificat
 import CalendarImage from "@/components/calendar-image";
 import PollResultsList from "@/components/poll-results-list";
 import AttendanceHistoryList from "@/components/attendance-history-list";
+import {
+  FEEDBACK_MIN_RESPONSES,
+  FeedbackAdminCard,
+  computeFeedbackStats,
+  feedbackAttendanceRatioLabel,
+  recurringWeakCategories,
+  type EventFeedbackRow,
+  type EventFeedbackSummary
+} from "@/components/event-feedback";
+import { openReportWindow } from "@/lib/records-report";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import {
   createPollChoice,
@@ -603,6 +613,17 @@ export default function EventsManagerPage() {
   const [suggestionStatus, setSuggestionStatus] = useState("");
   const [submissionStatus, setSubmissionStatus] = useState("");
   const [selectedEventAttendance, setSelectedEventAttendance] = useState<EventAttendanceRow[]>([]);
+  // P4 event feedback (admin review + analytics)
+  const [feedbackRows, setFeedbackRows] = useState<EventFeedbackRow[]>([]);
+  const [feedbackSummaries, setFeedbackSummaries] = useState<EventFeedbackSummary[]>([]);
+  const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "loading" | "ready" | "partial" | "error">("idle");
+  const [feedbackNotice, setFeedbackNotice] = useState("");
+  const [feedbackAdmin, setFeedbackAdmin] = useState<"checking" | "allowed" | "denied">("checking");
+  const [feedbackCompareIds, setFeedbackCompareIds] = useState<string[]>([]);
+  const [attendeeCountByEvent, setAttendeeCountByEvent] = useState<Map<string, number>>(new Map());
+  // P8 — tabbed event detail area (Attendance / Feedback / Polls / Suggestions)
+  const [detailTab, setDetailTab] = useState<"attendance" | "feedback" | "polls" | "suggestions">("attendance");
+  const [calendarRemoveOpen, setCalendarRemoveOpen] = useState(false);
   const [attendanceStatus, setAttendanceStatus] = useState("");
   const [submissions, setSubmissions] = useState<EventPollSubmission[]>([]);
   const [memberCounts, setMemberCounts] = useState<MemberCounts | null>(null);
@@ -1044,6 +1065,7 @@ export default function EventsManagerPage() {
       setEditingPoll(null);
       setAdditionalPolls([]);
       setShowArchivedPolls(false);
+      setDetailTab("attendance");
 
       if (!selectedEventId) {
         setSelectedEventAttendance([]);
@@ -1059,6 +1081,195 @@ export default function EventsManagerPage() {
       window.clearTimeout(timeoutId);
     };
   }, [loadEventAttendance, loadSubmissions, selectedEventId]);
+
+  // ---------------------------------------------------------------------------
+  // P4 — Event Feedback (admin review + analytics)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    let active = true;
+    const checkAdmin = async () => {
+      const admin = await supabase.rpc("is_admin");
+      if (!active) return;
+      setFeedbackAdmin(!admin.error && admin.data === true ? "allowed" : "denied");
+    };
+    void checkAdmin();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const loadFeedbackData = useCallback(async () => {
+    setFeedbackStatus("loading");
+    setFeedbackNotice("");
+
+    const [raw, summaries, attendanceRows] = await Promise.all([
+      supabase.from("event_feedback").select("*").order("created_at", { ascending: false }),
+      supabase.from("event_feedback_summary").select("*"),
+      supabase.from("attendance").select("event_id, student_id").not("event_id", "is", null)
+    ]);
+
+    let loadedAny = false;
+    const notices: string[] = [];
+
+    if (!raw.error) {
+      setFeedbackRows((raw.data ?? []) as EventFeedbackRow[]);
+      loadedAny = true;
+    } else {
+      setFeedbackRows([]);
+      notices.push(
+        "Raw feedback rows are not readable with your permissions (per-event distributions and comments are unavailable)."
+      );
+    }
+
+    if (!summaries.error) {
+      setFeedbackSummaries((summaries.data ?? []) as EventFeedbackSummary[]);
+      loadedAny = true;
+    } else {
+      setFeedbackSummaries([]);
+      if (!raw.error) notices.push("The feedback summary view is unavailable; averages are computed from raw rows.");
+    }
+
+    if (!attendanceRows.error) {
+      const counts = new Map<string, Set<string>>();
+      for (const row of (attendanceRows.data ?? []) as Array<{ event_id: string | null; student_id: string }>) {
+        if (!row.event_id || !row.student_id) continue;
+        const set = counts.get(row.event_id) ?? new Set<string>();
+        set.add(row.student_id);
+        counts.set(row.event_id, set);
+      }
+      const distinct = new Map<string, number>();
+      for (const [eventId, set] of counts) distinct.set(eventId, set.size);
+      setAttendeeCountByEvent(distinct);
+    } else {
+      notices.push("Linked attendance counts are unavailable, so feedback-to-attendance ratios cannot be shown.");
+    }
+
+    if (!loadedAny) {
+      setFeedbackStatus("error");
+      setFeedbackNotice(
+        "Feedback data could not be loaded. Confirm the event_feedback tables exist and your permissions allow reading them."
+      );
+      return;
+    }
+
+    setFeedbackStatus(notices.length > 0 ? "partial" : "ready");
+    setFeedbackNotice(notices.join(" "));
+  }, []);
+
+  useEffect(() => {
+    if (feedbackAdmin !== "allowed") return;
+    if (feedbackStatus !== "idle") return;
+    void loadFeedbackData();
+  }, [feedbackAdmin, feedbackStatus, loadFeedbackData]);
+
+  const feedbackStatsByEvent = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof computeFeedbackStats>>();
+    const grouped = new Map<string, EventFeedbackRow[]>();
+    for (const row of feedbackRows) {
+      const list = grouped.get(row.event_id);
+      if (list) list.push(row);
+      else grouped.set(row.event_id, [row]);
+    }
+    for (const event of events) {
+      const rows = grouped.get(event.id) ?? [];
+      const summary = feedbackSummaries.find((entry) => entry.event_id === event.id) ?? null;
+      map.set(event.id, computeFeedbackStats(rows, summary));
+    }
+    return map;
+  }, [events, feedbackRows, feedbackSummaries]);
+
+  const recurringWeakFeedback = useMemo(() => {
+    const entries = events
+      .map((event) => ({
+        eventTitle: event.title,
+        stats: feedbackStatsByEvent.get(event.id)
+      }))
+      .filter((entry): entry is { eventTitle: string; stats: ReturnType<typeof computeFeedbackStats> } =>
+        Boolean(entry.stats)
+      );
+    return recurringWeakCategories(entries);
+  }, [events, feedbackStatsByEvent]);
+
+  const toggleFeedbackCompare = useCallback((eventId: string) => {
+    setFeedbackCompareIds((previous) => {
+      if (previous.includes(eventId)) return previous.filter((id) => id !== eventId);
+      if (previous.length >= 3) return previous;
+      return [...previous, eventId];
+    });
+  }, []);
+
+  const printFeedbackReport = useCallback(
+    (event: EventItem) => {
+      const stats = feedbackStatsByEvent.get(event.id);
+      if (!stats) return;
+      const attendees = attendeeCountByEvent.get(event.id) ?? null;
+      const opened = openReportWindow({
+        title: `Event Feedback Report — ${event.title}`,
+        orientation: "portrait",
+        metaRows: [
+          `Event date: ${event.event_date ?? "No date"}`,
+          `Total responses: ${stats.total}`,
+          stats.firstResponseDay ? `First response: ${stats.firstResponseDay}` : "",
+          stats.lastActivityDay ? `Most recent activity: ${stats.lastActivityDay}` : "",
+          `Feedback-to-attendance: ${feedbackAttendanceRatioLabel(stats.total, attendees)}`
+        ].filter(Boolean),
+        stats: [
+          { label: "Total Responses", value: stats.total },
+          { label: "Average Overall Rating", value: stats.overallAvg === null ? "—" : `${stats.overallAvg.toFixed(2)} / 5` },
+          { label: "Recorded Attendees (linked)", value: attendees ?? "Not computable" }
+        ],
+        sections: [
+          {
+            title: "Rating Distribution",
+            tables: [
+              {
+                title: "Overall rating (1-5 stars)",
+                columns: ["Rating", "Responses"],
+                rightAlignFrom: 1,
+                rows: stats.distribution.map((item) => [`${item.rating}★`, item.count])
+              }
+            ]
+          },
+          {
+            title: "Category Performance",
+            tables: [
+              {
+                title: "Average per category (N/A ratings excluded)",
+                columns: ["Category", "Average", "Responses"],
+                rightAlignFrom: 1,
+                rows: stats.categories.map((category) => [
+                  category.label,
+                  category.avg === null ? "N/A" : category.avg.toFixed(2),
+                  category.count
+                ])
+              }
+            ]
+          },
+          {
+            title: "Comments",
+            tables: [
+              {
+                title: "Written feedback",
+                columns: ["Author", "Rating", "Date", "Comment"],
+                rows: stats.comments.map((entry) => [
+                  entry.author,
+                  `${entry.rating}★`,
+                  entry.date ?? "—",
+                  entry.comment || "(no comment)"
+                ])
+              }
+            ]
+          }
+        ]
+      });
+      if (opened) {
+        setNotification({ tone: "success", message: "Feedback report opened in a new window for printing." });
+      } else {
+        setNotification({ tone: "warning", message: "Allow pop-ups for this site to open the printable report." });
+      }
+    },
+    [attendeeCountByEvent, feedbackStatsByEvent]
+  );
 
   useEffect(() => {
     return () => {
@@ -1808,8 +2019,6 @@ export default function EventsManagerPage() {
       return;
     }
 
-    if (!window.confirm("Remove the current calendar image?")) return;
-
     const oldStoragePath = calendarRow.storage_path;
     const { error } = await supabase
       .from("calendar")
@@ -2317,7 +2526,7 @@ export default function EventsManagerPage() {
                 <button
                   type="button"
                   className="btn-ghost text-[#8a3f46]"
-                  onClick={() => void removeCalendarImage()}
+                  onClick={() => setCalendarRemoveOpen(true)}
                   disabled={calendarUploading}
                 >
                   Remove
@@ -2375,7 +2584,54 @@ export default function EventsManagerPage() {
               {selectedEvent.details ? <p className="mt-2 text-sm text-[#3e5850]">{selectedEvent.details}</p> : null}
             </div>
 
-            <div className="rounded-2xl border border-[#bdd0c9] bg-white/85 p-4">
+            <div className="flex flex-wrap gap-2" role="tablist" aria-label="Event detail sections">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={detailTab === "attendance"}
+                onClick={() => setDetailTab("attendance")}
+                className={detailTab === "attendance" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
+              >
+                Attendance
+              </button>
+              {feedbackAdmin === "allowed" ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === "feedback"}
+                  onClick={() => setDetailTab("feedback")}
+                  className={detailTab === "feedback" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
+                >
+                  Feedback
+                </button>
+              ) : null}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={detailTab === "polls"}
+                onClick={() => setDetailTab("polls")}
+                className={detailTab === "polls" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
+              >
+                Polls
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={detailTab === "suggestions"}
+                onClick={() => setDetailTab("suggestions")}
+                className={detailTab === "suggestions" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
+              >
+                Suggestions
+              </button>
+            </div>
+
+            <div
+              className={
+                detailTab === "attendance"
+                  ? "rounded-2xl border border-[#bdd0c9] bg-white/85 p-4"
+                  : "hidden"
+              }
+            >
               <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-[#4f675e]">Event Attendance</h3>
               <p className="mt-1 font-[var(--font-heading)] text-2xl text-[#23332d]">{selectedEventAttendance.length}</p>
               {attendanceStatus ? <p className="mt-2 text-xs font-semibold text-[#7a3237]">{attendanceStatus}</p> : null}
@@ -2395,7 +2651,26 @@ export default function EventsManagerPage() {
               </div>
             </div>
 
-            <section className="space-y-3 rounded-2xl border border-[#bdd0c9] bg-white/85 p-4">
+            <div className={detailTab === "feedback" && feedbackAdmin === "allowed" ? "" : "hidden"}>
+              <FeedbackAdminCard
+                event={selectedEvent}
+                stats={feedbackStatsByEvent.get(selectedEvent.id) ?? null}
+                attendees={attendeeCountByEvent.get(selectedEvent.id) ?? null}
+                status={feedbackStatus}
+                notice={feedbackNotice}
+                events={events}
+                compareIds={feedbackCompareIds}
+                statsByEvent={feedbackStatsByEvent}
+                recurringWeak={recurringWeakFeedback}
+                minResponses={FEEDBACK_MIN_RESPONSES}
+                onRefresh={() => void loadFeedbackData()}
+                onPrint={() => printFeedbackReport(selectedEvent)}
+                onToggleCompare={toggleFeedbackCompare}
+                onClearCompare={() => setFeedbackCompareIds([])}
+              />
+            </div>
+
+            <section className={detailTab === "polls" ? "space-y-3 rounded-2xl border border-[#bdd0c9] bg-white/85 p-4" : "hidden"}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-[var(--font-heading)] text-lg text-[#23332d]">Polls</h3>
@@ -2533,8 +2808,9 @@ export default function EventsManagerPage() {
               ) : null}
             </section>
 
-            <div>
-              <p className="text-sm font-semibold text-[#35564a]">Quick Suggestions</p>
+            <div className={detailTab === "suggestions" ? "space-y-4" : "hidden"}>
+              <div>
+                <p className="text-sm font-semibold text-[#35564a]">Quick Suggestions</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {DEFAULT_FOOD_SUGGESTIONS.map((food) => (
                   <button
@@ -2589,6 +2865,7 @@ export default function EventsManagerPage() {
                 ))
               )}
             </div>
+            </div>
           </div>
         )}
       </section>
@@ -2598,6 +2875,22 @@ export default function EventsManagerPage() {
           tone={notification.tone}
           message={notification.message}
           onDismiss={() => setNotification(null)}
+        />
+      ) : null}
+      {calendarRemoveOpen ? (
+        <AppNotification
+          tone="warning"
+          variant="dialog"
+          title="Remove Calendar Image?"
+          message="The current calendar image will be removed from the dashboard and deleted from storage. You can upload a new one afterwards."
+          confirmLabel="Yes, Remove"
+          cancelLabel="Keep It"
+          onCancel={() => setCalendarRemoveOpen(false)}
+          onDismiss={() => setCalendarRemoveOpen(false)}
+          onConfirm={() => {
+            setCalendarRemoveOpen(false);
+            void removeCalendarImage();
+          }}
         />
       ) : null}
       {pollDeleteTarget ? (

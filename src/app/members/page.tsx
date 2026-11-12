@@ -25,7 +25,7 @@ type MemberRow = {
 
 type MemberStatusFilter = "all" | "active" | "inactive";
 type NetworkFilter = "all" | "youth" | "youngProfessionals" | "mensNetwork" | "womensNetwork";
-const MEMBERS_PAGE_SIZE = 5;
+const MEMBERS_PAGE_SIZE = 10;
 
 type MemberHistoryRow = {
   id: string;
@@ -318,30 +318,39 @@ export default function MembersPage() {
     );
   };
 
+  // P8 — confirmation dialogs replace native confirm() popups.
+  const [confirmTarget, setConfirmTarget] = useState<{ message: string; run: () => void } | null>(null);
+
   const toggleMemberActive = async (member: MemberRow) => {
     const isActive = member.is_active !== false;
 
     if (isActive) {
-      const confirmed = confirm(
-        `Set ${member.full_name} to Inactive? Their account status will stay inactive, but they can still be scanned for attendance and all history will be kept.`
-      );
-      if (!confirmed) return;
+      setConfirmTarget({
+        message: `Set ${member.full_name} to Inactive? Their account status will stay inactive, but they can still be scanned for attendance and all history will be kept.`,
+        run: () => {
+          void setMembersActive([member.id], false);
+        }
+      });
+      return;
     }
 
-    await setMembersActive([member.id], !isActive);
+    await setMembersActive([member.id], true);
   };
 
   const bulkSetSelectedActive = async (active: boolean) => {
     if (selectedIds.length === 0) return;
 
     if (!active) {
-      const confirmed = confirm(
-        `Set ${selectedIds.length} selected members to Inactive? Their account status will stay inactive, but they can still be scanned for attendance and all history will be kept.`
-      );
-      if (!confirmed) return;
+      setConfirmTarget({
+        message: `Set ${selectedIds.length} selected members to Inactive? Their account status will stay inactive, but they can still be scanned for attendance and all history will be kept.`,
+        run: () => {
+          void setMembersActive(selectedIds, false);
+        }
+      });
+      return;
     }
 
-    await setMembersActive(selectedIds, active);
+    await setMembersActive(selectedIds, true);
   };
 
   const exportFilteredCsv = () => {
@@ -779,6 +788,23 @@ export default function MembersPage() {
           }}
           onConfirm={() => void confirmDeleteMember()}
           busy={deleting}
+        />
+      ) : null}
+      {confirmTarget ? (
+        <AppNotification
+          tone="warning"
+          variant="dialog"
+          title="Please Confirm"
+          message={confirmTarget.message}
+          confirmLabel="Yes, Continue"
+          cancelLabel="Go Back"
+          onCancel={() => setConfirmTarget(null)}
+          onDismiss={() => setConfirmTarget(null)}
+          onConfirm={() => {
+            const run = confirmTarget.run;
+            setConfirmTarget(null);
+            run();
+          }}
         />
       ) : null}
     </div>

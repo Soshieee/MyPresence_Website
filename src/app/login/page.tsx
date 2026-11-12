@@ -5,15 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import AppNotification, { AppNotificationTone } from "@/components/app-notification";
-import LegalDocumentModal from "@/components/legal-document-modal";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { firstPasswordIssue, passwordRequirementStatuses } from "@/lib/password";
-import {
-  PRIVACY_LAST_UPDATED,
-  privacySections,
-  TERMS_LAST_UPDATED,
-  termsSections
-} from "@/lib/legal-content";
+import { setSessionHint } from "@/lib/session-hint";
 
 type LoginApiResult = {
   ok?: boolean;
@@ -58,17 +52,11 @@ const VERSES = [
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "verify" | "reset-verify" | "reset-password">("login");
+  const [mode, setMode] = useState<"login" | "forgot" | "reset-verify" | "reset-password">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [signupConsent, setSignupConsent] = useState(false);
-  const [termsViewed, setTermsViewed] = useState(false);
-  const [privacyViewed, setPrivacyViewed] = useState(false);
-  const [legalModal, setLegalModal] = useState<"terms" | "privacy" | null>(null);
   const [verificationCode, setVerificationCode] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -129,15 +117,11 @@ export default function LoginPage() {
     setNotification(null);
   };
 
-  const switchMode = (nextMode: "login" | "signup" | "forgot" | "verify" | "reset-verify" | "reset-password") => {
+  const switchMode = (nextMode: "login" | "forgot" | "reset-verify" | "reset-password") => {
     setMode(nextMode);
     setPassword("");
     setConfirmPassword("");
     setShowPassword(false);
-    setSignupConsent(false);
-    setTermsViewed(false);
-    setPrivacyViewed(false);
-    setLegalModal(null);
     resetFeedback();
   };
 
@@ -157,11 +141,11 @@ export default function LoginPage() {
     setSubmitting(true);
     resetFeedback();
 
-    if (mode === "verify" || mode === "reset-verify") {
+    if (mode === "reset-verify") {
       const { error: verifyError } = await supabase.auth.verifyOtp({
         email: email.trim(),
         token: verificationCode.trim(),
-        type: mode === "verify" ? "signup" : "recovery"
+        type: "recovery"
       });
 
       setSubmitting(false);
@@ -170,16 +154,8 @@ export default function LoginPage() {
         return;
       }
 
-      if (mode === "verify") {
-        setNotification({
-          tone: "success",
-          message: "Email verified. Your application is now waiting for administrator review."
-        });
-        setMode("login");
-      } else {
-        setNotification({ tone: "success", message: "Code verified. Choose a new password." });
-        setMode("reset-password");
-      }
+      setNotification({ tone: "success", message: "Code verified. Choose a new password." });
+      setMode("reset-password");
       setVerificationCode("");
       return;
     }
@@ -216,8 +192,9 @@ export default function LoginPage() {
     }
 
     if (mode === "reset-password") {
-      if (password.length < 8) {
-        setError("Password must be at least 8 characters long.");
+      const passwordIssue = firstPasswordIssue(password);
+      if (passwordIssue) {
+        setError(passwordIssue);
         setSubmitting(false);
         return;
       }
@@ -239,58 +216,6 @@ export default function LoginPage() {
       setConfirmPassword("");
       setNotification({ tone: "success", message: "Password updated successfully. You can now sign in." });
       setMode("login");
-      return;
-    }
-
-    if (mode === "signup") {
-      if (!firstName.trim() || !lastName.trim()) {
-        setError("First name and last name are required.");
-        setSubmitting(false);
-        return;
-      }
-      const passwordIssue = firstPasswordIssue(password);
-      if (passwordIssue) {
-        setError(passwordIssue);
-        setSubmitting(false);
-        return;
-      }
-      if (password !== confirmPassword) {
-        setError("Passwords do not match.");
-        setSubmitting(false);
-        return;
-      }
-      if (!signupConsent) {
-        setError("You must agree to the Terms and Conditions and acknowledge the Privacy Notice before creating an account.");
-        setSubmitting(false);
-        return;
-      }
-
-      const response = await fetch("/api/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          email: email.trim(),
-          password,
-          acceptedTerms: signupConsent
-        })
-      });
-      const result = await response.json().catch(() => ({}));
-      setSubmitting(false);
-
-      if (!response.ok) {
-        setError(typeof result.error === "string" ? result.error : "Registration failed.");
-        return;
-      }
-
-      setNotification({
-        tone: "success",
-        message: "Account created. Enter the verification code sent to your email."
-      });
-      setMode("verify");
-      setPassword("");
-      setConfirmPassword("");
       return;
     }
 
@@ -344,6 +269,9 @@ export default function LoginPage() {
 
     setLockoutUntil(null);
     setWarning("");
+    // Set the server-side redirect hint before navigating so the proxy
+    // recognizes the session immediately.
+    setSessionHint();
     router.replace("/");
   };
 
@@ -413,22 +341,20 @@ export default function LoginPage() {
           <h2 className="text-center font-[var(--font-heading)] text-3xl text-[#22332d]">
             {mode === "login"
               ? "Welcome Back"
-              : mode === "signup"
-                ? "Create Account"
-                : mode === "verify" || mode === "reset-verify"
-                  ? "Verify Email"
-                  : "Reset Password"}
+              : mode === "reset-verify"
+                ? "Verify Email"
+                : mode === "reset-password"
+                  ? "Reset Password"
+                  : "Forgot Password"}
           </h2>
           <p className="mt-2 text-center text-sm text-[#5d7269]">
             {mode === "login"
               ? "Sign in with your admin account to access dashboard pages."
-              : mode === "signup"
-                ? "Create a Web Admin Account application for administrator review."
-                : mode === "verify" || mode === "reset-verify"
-                  ? `Enter the 8-digit code sent to ${email}.`
-                  : mode === "reset-password"
-                    ? "Choose a new password for your MyPresence account."
-                    : "Enter your email and we will send a secure reset code if an account exists."}
+              : mode === "reset-verify"
+                ? `Enter the 8-digit code sent to ${email}.`
+                : mode === "reset-password"
+                  ? "Choose a new password for your MyPresence account."
+                  : "Enter your email and we will send a secure reset code if an account exists."}
           </p>
 
           {!hasSupabaseEnv ? <p className="mt-4 status-error">{supabaseEnvIssue}</p> : null}
@@ -440,25 +366,13 @@ export default function LoginPage() {
           ) : null}
 
           <div className="mt-7 space-y-4">
-            {mode === "signup" ? (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="field-label" htmlFor="first-name">First Name</label>
-                  <input id="first-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} className="field-input" autoComplete="given-name" required />
-                </div>
-                <div>
-                  <label className="field-label" htmlFor="last-name">Last Name</label>
-                  <input id="last-name" value={lastName} onChange={(e) => setLastName(e.target.value)} className="field-input" autoComplete="family-name" required />
-                </div>
-              </div>
-            ) : null}
-            {mode !== "verify" && mode !== "reset-verify" ? (
+            {mode !== "reset-verify" ? (
             <div>
               <label className="field-label" htmlFor="login-email">Email</label>
               <input id="login-email" value={email} onChange={(e) => setEmail(e.target.value)} className="field-input" type="email" required autoComplete="email" />
             </div>
             ) : null}
-            {mode === "verify" || mode === "reset-verify" ? (
+            {mode === "reset-verify" ? (
               <div>
                 <label className="field-label" htmlFor="verification-code">Verification Code</label>
                 <input
@@ -473,17 +387,17 @@ export default function LoginPage() {
                 />
               </div>
             ) : null}
-            {mode !== "forgot" && mode !== "verify" && mode !== "reset-verify" ? (
+            {mode !== "forgot" && mode !== "reset-verify" ? (
               <>
                 <div>
                   <label className="field-label" htmlFor="login-password">Password</label>
                   <div className="relative">
-                    <input id="login-password" value={password} onChange={(e) => setPassword(e.target.value)} className="field-input pr-20" type={showPassword ? "text" : "password"} required autoComplete={mode === "signup" ? "new-password" : "current-password"} />
+                    <input id="login-password" value={password} onChange={(e) => setPassword(e.target.value)} className="field-input pr-20" type={showPassword ? "text" : "password"} required autoComplete={mode === "reset-password" ? "new-password" : "current-password"} />
                     <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-[#527064]" onClick={() => setShowPassword((value) => !value)}>
                       {showPassword ? "Hide" : "Show"}
                     </button>
                   </div>
-                  {mode === "signup" ? (
+                  {mode === "reset-password" ? (
                     <ul className="mt-2.5 grid gap-1.5" aria-label="Password requirements">
                       {passwordRequirementStatuses(password).map((requirement) => (
                         <li key={requirement.key} className="flex items-center gap-2 text-xs">
@@ -507,72 +421,10 @@ export default function LoginPage() {
                     </ul>
                   ) : null}
                 </div>
-                {mode === "signup" ? (
+                {mode === "reset-password" ? (
                   <div>
                     <label className="field-label" htmlFor="confirm-password">Confirm Password</label>
                     <input id="confirm-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="field-input" type={showPassword ? "text" : "password"} required autoComplete="new-password" />
-                  </div>
-                ) : null}
-                {mode === "signup" ? (
-                  <div className="rounded-xl border border-[#c8d6d1] bg-[#f7fbf9] px-3 py-2.5">
-                    <p className="field-label">Review before continuing</p>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => setLegalModal("terms")}
-                        aria-pressed={termsViewed}
-                        className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
-                          termsViewed
-                            ? "border-[#385b4f] bg-[#eef4f1] text-[#315349]"
-                            : "border-[#c8d6d1] bg-white text-[#35564a] hover:border-[#7d968c]"
-                        }`}
-                      >
-                        {termsViewed ? (
-                          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="3">
-                            <path d="m5 12 4.5 4.5L19 7" />
-                          </svg>
-                        ) : null}
-                        {termsViewed ? "Terms reviewed" : "Review Terms and Conditions"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setLegalModal("privacy")}
-                        aria-pressed={privacyViewed}
-                        className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
-                          privacyViewed
-                            ? "border-[#385b4f] bg-[#eef4f1] text-[#315349]"
-                            : "border-[#c8d6d1] bg-white text-[#35564a] hover:border-[#7d968c]"
-                        }`}
-                      >
-                        {privacyViewed ? (
-                          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="3">
-                            <path d="m5 12 4.5 4.5L19 7" />
-                          </svg>
-                        ) : null}
-                        {privacyViewed ? "Privacy reviewed" : "Review Privacy Notice"}
-                      </button>
-                    </div>
-                    <div className="mt-2.5 flex items-start gap-2.5">
-                      <input
-                        id="signup-consent"
-                        type="checkbox"
-                        checked={signupConsent}
-                        onChange={(event) => setSignupConsent(event.target.checked)}
-                        disabled={!termsViewed || !privacyViewed}
-                        className="mt-0.5 h-4 w-4 shrink-0 accent-[#385b4f] disabled:opacity-50"
-                      />
-                      <label
-                        htmlFor="signup-consent"
-                        className={`text-xs leading-5 ${termsViewed && privacyViewed ? "text-[#425b52]" : "text-[#8a9a93]"}`}
-                      >
-                        I have read and agree to the Terms and Conditions and acknowledge the Privacy Notice.
-                      </label>
-                    </div>
-                    {!termsViewed || !privacyViewed ? (
-                      <p className="mt-2 text-[11px] font-semibold text-[#7a5a17]">
-                        Open and read both documents to unlock the agreement checkbox.
-                      </p>
-                    ) : null}
                   </div>
                 ) : null}
               </>
@@ -583,31 +435,27 @@ export default function LoginPage() {
             <button
               type="submit"
               className="btn-primary w-full"
-              disabled={submitting || !hasSupabaseEnv || (mode === "login" && lockoutRemaining > 0) || (mode === "signup" && !signupConsent)}
+              disabled={submitting || !hasSupabaseEnv || (mode === "login" && lockoutRemaining > 0)}
             >
               {mode === "login" && lockoutRemaining > 0
                 ? `Try again in ${formatCountdown(lockoutRemaining)}`
                 : submitting
                   ? mode === "login"
                     ? "Signing in..."
-                    : mode === "signup"
-                      ? "Creating account..."
-                      : mode === "verify" || mode === "reset-verify"
-                        ? "Verifying..."
-                        : mode === "reset-password"
-                          ? "Updating..."
-                          : "Sending code..."
+                    : mode === "reset-verify"
+                      ? "Verifying..."
+                      : mode === "reset-password"
+                        ? "Updating..."
+                        : "Sending code..."
                   : mode === "login"
                     ? "Enter Dashboard"
-                    : mode === "signup"
-                      ? "Create Account"
-                      : mode === "verify" || mode === "reset-verify"
-                        ? "Verify Email"
-                        : mode === "reset-password"
-                          ? "Update Password"
-                          : "Send Reset Code"}
+                    : mode === "reset-verify"
+                      ? "Verify Email"
+                      : mode === "reset-password"
+                        ? "Update Password"
+                        : "Send Reset Code"}
             </button>
-            {mode === "verify" || mode === "reset-verify" ? (
+            {mode === "reset-verify" ? (
               <button
                 type="button"
                 className="text-xs font-semibold text-[#527064] hover:text-[#22332d]"
@@ -615,22 +463,6 @@ export default function LoginPage() {
                 onClick={async () => {
                   setSubmitting(true);
                   resetFeedback();
-
-                  if (mode === "verify") {
-                    const { error: resendError } = await supabase.auth.resend({
-                      type: "signup",
-                      email: email.trim()
-                    });
-
-                    setSubmitting(false);
-                    if (resendError) {
-                      setError(resendError.message || "Unable to resend the verification code.");
-                      return;
-                    }
-
-                    setNotification({ tone: "success", message: "A new verification code was sent." });
-                    return;
-                  }
 
                   let response: Response;
 
@@ -660,18 +492,13 @@ export default function LoginPage() {
                   });
                 }}
               >
-                {mode === "verify" ? "Resend verification code" : "Resend reset code"}
+                Resend reset code
               </button>
             ) : null}
             {mode === "login" ? (
-              <div className="flex items-center justify-between text-xs font-semibold text-[#527064]">
-                <button type="button" className="hover:text-[#22332d]" onClick={() => switchMode("signup")}>Create Account</button>
+              <div className="flex items-center justify-end text-xs font-semibold text-[#527064]">
                 <button type="button" className="hover:text-[#22332d]" onClick={() => switchMode("forgot")}>Forgot Password?</button>
               </div>
-            ) : mode !== "verify" && mode !== "reset-verify" && mode !== "reset-password" ? (
-              <button type="button" className="text-xs font-semibold text-[#527064] hover:text-[#22332d]" onClick={() => switchMode("login")}>
-                Return to Login
-              </button>
             ) : (
               <button type="button" className="text-xs font-semibold text-[#527064] hover:text-[#22332d]" onClick={() => switchMode("login")}>
                 Return to Login
@@ -693,15 +520,6 @@ export default function LoginPage() {
         </form>
       </section>
       {notification ? <AppNotification tone={notification.tone} message={notification.message} onDismiss={() => setNotification(null)} /> : null}
-      {legalModal ? (
-        <LegalDocumentModal
-          title={legalModal === "terms" ? "Terms and Conditions" : "Privacy Notice"}
-          lastUpdated={legalModal === "terms" ? TERMS_LAST_UPDATED : PRIVACY_LAST_UPDATED}
-          sections={legalModal === "terms" ? termsSections : privacySections}
-          onClose={() => setLegalModal(null)}
-          onReachedEnd={() => (legalModal === "terms" ? setTermsViewed(true) : setPrivacyViewed(true))}
-        />
-      ) : null}
     </div>
   );
 }

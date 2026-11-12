@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppNotification, { AppNotificationTone } from "@/components/app-notification";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
+import { firstPasswordIssue, passwordRequirementStatuses } from "@/lib/password";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -37,8 +38,9 @@ export default function ResetPasswordPage() {
     setError("");
     setNotification(null);
 
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters long.");
+    const passwordIssue = firstPasswordIssue(password);
+    if (passwordIssue) {
+      setError(passwordIssue);
       return;
     }
     if (password !== confirmPassword) {
@@ -77,6 +79,27 @@ export default function ResetPasswordPage() {
                 {showPassword ? "Hide" : "Show"}
               </button>
             </div>
+            <ul className="mt-2.5 grid gap-1.5" aria-label="Password requirements">
+              {passwordRequirementStatuses(password).map((requirement) => (
+                <li key={requirement.key} className="flex items-center gap-2 text-xs">
+                  <span
+                    aria-hidden="true"
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                      requirement.met
+                        ? "border-[#385b4f] bg-[#385b4f] text-white"
+                        : "border-[#b9cac3] bg-white text-transparent"
+                    }`}
+                  >
+                    <svg viewBox="0 0 24 24" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="3.5">
+                      <path d="m5 12 4.5 4.5L19 7" />
+                    </svg>
+                  </span>
+                  <span className={requirement.met ? "font-semibold text-[#315349]" : "text-[#6a7e76]"}>
+                    {requirement.label}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
           <div>
             <label className="field-label" htmlFor="confirm-new-password">Confirm New Password</label>

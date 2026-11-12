@@ -14,7 +14,8 @@
     "next": "^16.4.3",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "react-webcam": "^7.2.0"
+    "react-webcam": "^7.2.0",
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.30",

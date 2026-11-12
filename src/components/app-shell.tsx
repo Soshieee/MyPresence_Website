@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import OnboardingTour from "@/components/onboarding-tour";
 import JumpToTop from "@/components/jump-to-top";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
+import { clearSessionHint, setSessionHint } from "@/lib/session-hint";
 
 type NavItem = {
   href: string;
@@ -137,7 +138,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const isLegalRoute = pathname === "/terms" || pathname === "/privacy";
-  const isPublicAuthRoute = pathname === "/login" || pathname.startsWith("/auth/") || isLegalRoute;
+  const isKioskDisplay = pathname.startsWith("/attendance/kiosk");
+  const isPublicAuthRoute =
+    pathname === "/login" || pathname.startsWith("/auth/") || isLegalRoute || isKioskDisplay;
 
   useEffect(() => {
     if (!hasSupabaseEnv) {
@@ -160,6 +163,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       setIsAuthenticated(authed);
       if (!authed) setIsAdmin(false);
       setAuthChecked(true);
+      if (authed) setSessionHint();
+      else clearSessionHint();
 
       if (!authed && !isPublicAuthRoute) {
         router.replace("/login");
@@ -179,6 +184,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       setIsAuthenticated(authed);
       if (!authed) setIsAdmin(false);
       setAuthChecked(true);
+      if (authed) setSessionHint();
+      else clearSessionHint();
 
       if (!authed && !isPublicAuthRoute) {
         router.replace("/login");
@@ -215,6 +222,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (!hasSupabaseEnv || signingOut) return;
     setSigningOut(true);
     await supabase.auth.signOut();
+    clearSessionHint();
     setIsAdmin(false);
     setSigningOut(false);
     router.replace("/login");
@@ -224,7 +232,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const currentTitle = titleFromPath(activePath);
   const visibleNavItems = isAdmin
     ? navItems
-    : navItems.filter((item) => item.href !== "/verification");
+    : navItems.filter((item) => item.href !== "/verification" && item.href !== "/attendance");
 
   if (isLegalRoute) {
     return <>{children}</>;
