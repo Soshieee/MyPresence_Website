@@ -275,10 +275,15 @@ export function MembersAnalyticsModule() {
   }, [attendeeOnly, matchesMemberFilters, mode, occasionDates, scopedLogs, status, users]);
 
   // "Absent" tab: matching members with no attendance at the selected occasion.
-  // Attended/eligible/percent describe the rest of the period; the table
-  // renders the share bar full-width in absentMode to mark the missed occasion.
+  // Attended/eligible/percent describe the rest of the period; the share bar
+  // fills by each member's absence share (100% − attendance%) in absentMode.
   const absentRows = useMemo((): MemberRankingRow[] => {
     if (status !== "ready" || !attendeeOnly) return [];
+
+    // The occasion's own date, so members who were not registered yet on that
+    // day can be left out — they could not have attended it.
+    const occasionDate =
+      specificDate !== "" ? specificDate : (eventById.get(selectedEventId)?.event_date ?? null);
 
     const result: MemberRankingRow[] = [];
     for (const user of users) {
@@ -286,6 +291,8 @@ export function MembersAnalyticsModule() {
       if (attendeeIds.has(user.student_id)) continue;
 
       const registered = toDateKey(user.created_at ?? null);
+      if (occasionDate && registered !== null && registered > occasionDate) continue;
+
       const eligible =
         registered === null
           ? periodOccasionDates.size
@@ -306,7 +313,18 @@ export function MembersAnalyticsModule() {
     }
 
     return result.sort((a, b) => a.name.localeCompare(b.name));
-  }, [attendeeIds, attendeeOnly, matchesMemberFilters, periodOccasionDates, periodStatsByMember, status, users]);
+  }, [
+    attendeeIds,
+    attendeeOnly,
+    eventById,
+    matchesMemberFilters,
+    periodOccasionDates,
+    periodStatsByMember,
+    selectedEventId,
+    specificDate,
+    status,
+    users
+  ]);
 
   const selectedMemberEvents = useMemo(() => {
     if (!selectedUserId) return [];
@@ -576,7 +594,7 @@ export function MembersAnalyticsModule() {
         }`}
         note={
           showingAbsent
-            ? `Members who did not attend ${occasionLabel}. Attended and share columns describe the rest of the period; the filled bar marks the missed occasion.`
+            ? `Members who did not attend ${occasionLabel}. Attended and share columns describe the rest of the period; the Share of Period bar fills by how much of the period each member missed.`
             : mode === "ranking"
               ? "Eligible counts attendance occasions on or after the member's registration date. Click a member to see the events they attended."
               : selectedEvent

@@ -34,8 +34,25 @@ import {
   type LifegroupMemberRow
 } from "@/lib/analytics-data";
 import { hasSupabaseEnv } from "@/lib/supabase";
+import { activeChartLabel } from "@/components/analytics/chart-click";
 
-const SERIES_COLORS = ["#2563eb", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#0891b2", "#e11d48", "#65a30d"];
+// Distinct line colors. The first eight are the per-lifegroup palette; the
+// extras keep per-member lines (which are uncapped) distinguishable for
+// larger groups before the palette cycles.
+const SERIES_COLORS = [
+  "#2563eb",
+  "#8b5cf6",
+  "#f59e0b",
+  "#10b981",
+  "#ef4444",
+  "#0891b2",
+  "#e11d48",
+  "#65a30d",
+  "#f472b6",
+  "#a3e635",
+  "#fb923c",
+  "#6366f1"
+];
 const MEMBER_LINE_COLOR = "#0f766e";
 const MAX_GROUP_LINES = 8;
 const TOP_LIST_SIZE = 5;
@@ -241,6 +258,19 @@ export function LifegroupAnalyticsModule() {
     }
 
     if (selectedGroupId !== "all") {
+      // One comparable line per member of the selected lifegroup (uncapped),
+      // ordered by name so the legend reads predictably.
+      const members = (memberships.get(selectedGroupId) ?? [])
+        .map((membership) => ({ userId: membership.user_id, name: memberName(membership.user_id) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (members.length > 0) {
+        return members.map((member, index) => ({
+          key: member.userId,
+          name: member.name,
+          color: SERIES_COLORS[index % SERIES_COLORS.length],
+          matches: (record: PresentRecord) => record.userId === member.userId
+        }));
+      }
       const group = groupById.get(selectedGroupId);
       return [
         {
@@ -261,7 +291,7 @@ export function LifegroupAnalyticsModule() {
       color: SERIES_COLORS[index % SERIES_COLORS.length],
       matches: (record: PresentRecord) => record.lifegroupId === group.id
     }));
-  }, [effectiveMemberId, groupById, groupOptions, memberName, periodRecords, selectedGroupId]);
+  }, [effectiveMemberId, groupById, groupOptions, memberName, memberships, periodRecords, selectedGroupId]);
 
   const chartBuild = useMemo(() => {
     if (!effectiveYear) return { rows: [] as ChartRow[], monthView: false };
@@ -312,6 +342,13 @@ export function LifegroupAnalyticsModule() {
       });
     return { rows, monthView: true };
   }, [data, month, scopedRecords, series, effectiveYear, selectedGroupId]);
+
+  // Clicked points are resolved through the x-axis label — the same lookup the
+  // tooltip uses — because recharts 3 no longer exposes `activePayload`.
+  const rowByLabel = useMemo(
+    () => new Map(chartBuild.rows.map((row) => [row.label, row])),
+    [chartBuild.rows]
+  );
 
   const mostAttendedActivities = useMemo(() => {
     const counts = new Map<string, number>();
@@ -427,7 +464,11 @@ export function LifegroupAnalyticsModule() {
         lifegroupActivityDate(activity) === selectedDay &&
         (selectedGroupId === "all" || activity.lifegroup_id === selectedGroupId)
     );
-    const dayRecords = presentRecords.filter((record) => record.date === selectedDay);
+    // Attendees follow the lifegroup scope: with a specific lifegroup selected,
+    // only that group's members appear (the activities below are scoped the same).
+    const dayRecords = presentRecords.filter(
+      (record) => record.date === selectedDay && (selectedGroupId === "all" || record.lifegroupId === selectedGroupId)
+    );
     const attendeeIds = new Set(dayRecords.map((record) => record.userId));
     return {
       date: selectedDay,
@@ -560,13 +601,13 @@ export function LifegroupAnalyticsModule() {
                   data={chartBuild.rows}
                   margin={{ top: 16, right: 18, bottom: 4, left: -14 }}
                   onClick={(state) => {
-                    const payload = (state as { activePayload?: Array<{ payload?: ChartRow }> })
-                      ?.activePayload?.[0]?.payload;
-                    if (!payload?.dateKey) return;
+                    const label = activeChartLabel(state);
+                    const row = label ? rowByLabel.get(label) : undefined;
+                    if (!row?.dateKey) return;
                     if (chartBuild.monthView) {
-                      setSelectedDay((previous) => (previous === payload.dateKey ? null : payload.dateKey));
+                      setSelectedDay((previous) => (previous === row.dateKey ? null : row.dateKey));
                     } else {
-                      setMonth(payload.dateKey.slice(5, 7));
+                      setMonth(row.dateKey.slice(5, 7));
                       setSelectedDay(null);
                     }
                   }}

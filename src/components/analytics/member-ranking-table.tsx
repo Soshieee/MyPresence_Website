@@ -66,7 +66,7 @@ export function MemberRankingTable({
   onSelectRow?: (row: MemberRankingRow) => void;
   /** Rows per page; omit to render every row at once. */
   pageSize?: number;
-  /** Absent view: the share bar renders full-width to mark the missed occasion. */
+  /** Absent view: the share bar fills by the member's absence share (100% − attendance%) instead of attendance. */
   absentMode?: boolean;
 }) {
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
@@ -179,6 +179,9 @@ export function MemberRankingTable({
               <tbody>
                 {visibleRows.map((row) => {
                   const selected = selectedUserId === row.userId;
+                  // Absent view: the bar reflects each person's absence —
+                  // how much of the period they missed (100% − attendance%).
+                  const absenceShare = Math.max(0, Math.min(100, 100 - (row.percent ?? 0)));
                   return (
                     <tr
                       key={row.userId}
@@ -209,13 +212,20 @@ export function MemberRankingTable({
                         {row.lastAttended ? formatShortDate(row.lastAttended) : "Never in range"}
                       </td>
                       <td className="px-2 py-2.5">
-                        <div className="h-2 w-full min-w-[120px] overflow-hidden rounded-full bg-[#e8f0ec]">
-                          <div
-                            className={`h-full rounded-full transition-[width] duration-300 ${
-                              absentMode ? "bg-[#c2703d]" : "bg-[#385b4f]"
-                            }`}
-                            style={{ width: absentMode ? "100%" : `${row.percent ?? 0}%` }}
-                          />
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 min-w-[100px] flex-1 overflow-hidden rounded-full bg-[#e8f0ec]">
+                            <div
+                              className={`h-full rounded-full transition-[width] duration-300 ${
+                                absentMode ? "bg-[#c2703d]" : "bg-[#385b4f]"
+                              }`}
+                              style={{ width: `${absentMode ? absenceShare : (row.percent ?? 0)}%` }}
+                            />
+                          </div>
+                          {absentMode ? (
+                            <span className="w-10 shrink-0 text-right text-[11px] font-semibold text-[#a15c2b]">
+                              {absenceShare}%
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

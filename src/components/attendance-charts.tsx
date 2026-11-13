@@ -19,6 +19,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
+import { activeChartLabel } from "@/components/analytics/chart-click";
 
 export type ChartDatum = {
   label: string;
@@ -367,9 +368,9 @@ export function AttendanceTimelinePanel({
                 data={points}
                 margin={{ top: 16, right: 18, bottom: 4, left: -14 }}
                 onClick={(state) => {
-                  const payload = (state as { activePayload?: Array<{ payload?: TimelinePoint }> })
-                    ?.activePayload?.[0]?.payload;
-                  if (payload?.date) onSelectDate(payload.date);
+                  const label = activeChartLabel(state);
+                  const point = label ? pointByLabel.get(label) : undefined;
+                  if (point?.date) onSelectDate(point.date);
                 }}
                 style={{ cursor: granularity === "month" ? "pointer" : "default" }}
               >
