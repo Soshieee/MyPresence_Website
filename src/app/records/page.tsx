@@ -3,14 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { AttendanceLog, UserFace } from "@/types";
-import LineChart from "@/components/line-chart";
 import {
-  AttendanceTimelinePanel,
   CategoryBarsPanel,
-  DonutStatPanel,
-  GroupedBarsPanel,
-  type TimelinePoint
+  GroupedBarsPanel
 } from "@/components/attendance-charts";
+import { EventsAnalyticsModule } from "@/components/analytics/events-module";
+import { LifegroupAnalyticsModule } from "@/components/analytics/lifegroup-module";
+import { MIN_ANALYTICS_DATE } from "@/lib/analytics-data";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { NETWORK_LABELS, NetworkKey, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 import {
@@ -37,9 +36,6 @@ type EventLookup = {
   title: string;
   eventType: string | null;
 };
-// Reachable analytics history floor. Lowered from 2026-01-01 so pre-2026
-// attendance history (e.g., the 2023 records in the database) stays visible.
-const MIN_ANALYTICS_DATE = "2023-01-01";
 const RECORDS_PAGE_SIZE = 5;
 const MEMBER_SUMMARY_PAGE_SIZE = 5;
 const OCCASION_PAGE_SIZE = 5;
@@ -315,20 +311,13 @@ export default function AttendanceRecordsPage() {
   const [lifegroupRangePreset, setLifegroupRangePreset] = useState<LifegroupRangePreset>("7d");
   const [lifegroupFromDate, setLifegroupFromDate] = useState("");
   const [lifegroupToDate, setLifegroupToDate] = useState("");
-  const [comparisonPage, setComparisonPage] = useState(0);
   const [activityPage, setActivityPage] = useState(0);
   const [reportNotice, setReportNotice] = useState("");
   const [memberSummaryPage, setMemberSummaryPage] = useState(1);
   const [occasionPage, setOccasionPage] = useState(1);
   const [attendancePanel, setAttendancePanel] = useState<AttendancePanel>("records");
-  // P2 interactive timeline state (full-history dataset, lazy loaded when the
-  // Analytics tab is first opened).
-  const [timelineGranularity, setTimelineGranularity] = useState<"month" | "year">("month");
-  const [timelineMonth, setTimelineMonth] = useState("");
-  const [timelineYear, setTimelineYear] = useState("");
-  const [showPrevYear, setShowPrevYear] = useState(false);
-  const [showPrevMonth, setShowPrevMonth] = useState(false);
-  const [selectedTimelineDate, setSelectedTimelineDate] = useState<string | null>(null);
+  // Full-history attendance dataset, lazy loaded when the Analytics tab is
+  // first opened. Still feeds the Event Comparison card.
   const [compareEventIds, setCompareEventIds] = useState<string[]>([]);
   const [timelineLogs, setTimelineLogs] = useState<AttendanceLog[]>([]);
   const [timelineStatus, setTimelineStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -1170,214 +1159,6 @@ export default function AttendanceRecordsPage() {
     });
   }, [attendanceTypeFilter, selectedLinkedEventId, selectedNetworkSet, timelineLogs, userNetworkMap]);
 
-  const formatMonthKeyLabel = useCallback((key: string) => {
-    const [y, m] = key.split("-").map(Number);
-    if (!y || !m) return key;
-    return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  }, []);
-
-  const timelineMonthOptions = useMemo(() => {
-    const months = new Set<string>();
-    for (const log of timelineLogs) months.add(log.attended_date.slice(0, 7));
-    return Array.from(months).sort().reverse();
-  }, [timelineLogs]);
-
-  const timelineYearOptions = useMemo(() => {
-    const years = new Set<string>();
-    for (const log of timelineLogs) years.add(log.attended_date.slice(0, 4));
-    return Array.from(years).sort().reverse();
-  }, [timelineLogs]);
-
-  useEffect(() => {
-    if (timelineStatus !== "ready") return;
-    if (!timelineMonth || !timelineMonthOptions.includes(timelineMonth)) {
-      setTimelineMonth(timelineMonthOptions[0] ?? "");
-    }
-  }, [timelineMonth, timelineMonthOptions, timelineStatus]);
-
-  useEffect(() => {
-    if (timelineStatus !== "ready") return;
-    if (!timelineYear || !timelineYearOptions.includes(timelineYear)) {
-      setTimelineYear(timelineYearOptions[0] ?? "");
-    }
-  }, [timelineStatus, timelineYear, timelineYearOptions]);
-
-  const timelinePointData = useMemo(() => {
-    const empty = {
-      title: "",
-      points: [] as TimelinePoint[],
-      hasPrevYearData: false,
-      hasPrevMonthData: false
-    };
-    if (timelineStatus !== "ready") return empty;
-
-    const countByDate = (logsIn: AttendanceLog[]) => {
-      const map = new Map<string, Set<string>>();
-      for (const log of logsIn) {
-        let set = map.get(log.attended_date);
-        if (!set) {
-          set = new Set<string>();
-          map.set(log.attended_date, set);
-        }
-        set.add(log.student_id);
-      }
-      return map;
-    };
-
-    if (timelineGranularity === "month") {
-      if (!timelineMonth) return empty;
-      const [yearPart, monthPart] = timelineMonth.split("-").map(Number);
-      if (!yearPart || !monthPart) return empty;
-      const prevMonthDate = new Date(yearPart, monthPart - 2, 1);
-      const prevMonthKey = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, "0")}`;
-      const prevYearKey = `${yearPart - 1}-${String(monthPart).padStart(2, "0")}`;
-
-      const currentCounts = countByDate(
-        timelineFilteredLogs.filter((log) => log.attended_date.slice(0, 7) === timelineMonth)
-      );
-      const prevMonthLogs = timelineFilteredLogs.filter((log) => log.attended_date.slice(0, 7) === prevMonthKey);
-      const prevYearLogs = timelineFilteredLogs.filter((log) => log.attended_date.slice(0, 7) === prevYearKey);
-      const prevMonthCounts = countByDate(prevMonthLogs);
-      const prevYearCounts = countByDate(prevYearLogs);
-
-      const eventsByDay = new Map<number, Array<{ id: string; title: string; eventType: string | null }>>();
-      for (const event of linkedEvents) {
-        if (!event.event_date || event.event_date.slice(0, 7) !== timelineMonth) continue;
-        const day = Number(event.event_date.slice(8, 10));
-        const marker = { id: event.id, title: event.title, eventType: event.event_type ?? null };
-        const list = eventsByDay.get(day);
-        if (list) list.push(marker);
-        else eventsByDay.set(day, [marker]);
-      }
-
-      const dayNumbers = new Set<number>();
-      for (const date of currentCounts.keys()) dayNumbers.add(Number(date.slice(8, 10)));
-      for (const day of eventsByDay.keys()) dayNumbers.add(day);
-
-      const points: TimelinePoint[] = Array.from(dayNumbers)
-        .sort((a, b) => a - b)
-        .map((day) => {
-          const iso = `${timelineMonth}-${String(day).padStart(2, "0")}`;
-          const prevMonthSet = prevMonthCounts.get(`${prevMonthKey}-${String(day).padStart(2, "0")}`);
-          const prevYearSet = prevYearCounts.get(`${prevYearKey}-${String(day).padStart(2, "0")}`);
-          return {
-            label: String(day),
-            date: iso,
-            value: currentCounts.get(iso)?.size ?? 0,
-            prevMonthValue: prevMonthSet ? prevMonthSet.size : null,
-            prevYearValue: prevYearSet ? prevYearSet.size : null,
-            events: eventsByDay.get(day) ?? []
-          };
-        });
-
-      return {
-        title: formatMonthKeyLabel(timelineMonth),
-        points,
-        hasPrevMonthData: prevMonthLogs.length > 0,
-        hasPrevYearData: prevYearLogs.length > 0
-      };
-    }
-
-    // Year view: unique attendees per month across the year.
-    if (!timelineYear) return empty;
-    const year = Number(timelineYear);
-    if (!year) return empty;
-
-    const countsForYear = (targetYear: number) => {
-      const map = new Map<number, Set<string>>();
-      for (const log of timelineFilteredLogs) {
-        if (Number(log.attended_date.slice(0, 4)) !== targetYear) continue;
-        const month = Number(log.attended_date.slice(5, 7));
-        let set = map.get(month);
-        if (!set) {
-          set = new Set<string>();
-          map.set(month, set);
-        }
-        set.add(log.student_id);
-      }
-      return map;
-    };
-
-    const current = countsForYear(year);
-    const prev = countsForYear(year - 1);
-    const points: TimelinePoint[] = Array.from({ length: 12 }, (_, index) => {
-      const month = index + 1;
-      return {
-        label: new Date(year, index, 1).toLocaleDateString(undefined, { month: "short" }),
-        value: current.get(month)?.size ?? 0,
-        prevYearValue: prev.get(month)?.size ?? null,
-        prevMonthValue: null,
-        events: []
-      };
-    });
-
-    return {
-      title: String(year),
-      points,
-      hasPrevMonthData: false,
-      hasPrevYearData: prev.size > 0
-    };
-  }, [
-    formatMonthKeyLabel,
-    linkedEvents,
-    timelineFilteredLogs,
-    timelineGranularity,
-    timelineMonth,
-    timelineStatus,
-    timelineYear
-  ]);
-
-  const timelineDrillDown = useMemo(() => {
-    if (!selectedTimelineDate) return null;
-    const dayLogs = timelineFilteredLogs.filter((log) => log.attended_date === selectedTimelineDate);
-    const dayEvents = linkedEvents.filter((event) => event.event_date === selectedTimelineDate);
-
-    const contextBreakdown = new Map<string, { checkIns: number; people: Set<string> }>();
-    for (const log of dayLogs) {
-      const context = normalizeAttendanceType(log.attendance_context, log.attendance_group) ?? "Unknown";
-      let entry = contextBreakdown.get(context);
-      if (!entry) {
-        entry = { checkIns: 0, people: new Set<string>() };
-        contextBreakdown.set(context, entry);
-      }
-      entry.checkIns += 1;
-      entry.people.add(log.student_id);
-    }
-
-    const sundayLogs = dayLogs.filter(
-      (log) => normalizeAttendanceType(log.attendance_context, log.attendance_group) === "Sunday Service"
-    );
-    const firstService = new Set(
-      sundayLogs
-        .filter((log) => log.service_type === "First Service" || log.attendance_group === "First Service")
-        .map((log) => log.student_id)
-    ).size;
-    const secondService = new Set(
-      sundayLogs
-        .filter((log) => log.service_type === "Second Service" || log.attendance_group === "Second Service")
-        .map((log) => log.student_id)
-    ).size;
-
-    return {
-      date: selectedTimelineDate,
-      checkIns: dayLogs.length,
-      uniqueAttendees: new Set(dayLogs.map((log) => log.student_id)).size,
-      newcomerCount: new Set(
-        dayLogs.filter((log) => log.was_newcomer).map((log) => log.student_id)
-      ).size,
-      contexts: Array.from(contextBreakdown.entries()).map(([label, entry]) => ({
-        label,
-        checkIns: entry.checkIns,
-        people: entry.people.size
-      })),
-      sunday:
-        sundayLogs.length > 0
-          ? { overall: new Set(sundayLogs.map((log) => log.student_id)).size, firstService, secondService }
-          : null,
-      events: dayEvents
-    };
-  }, [linkedEvents, selectedTimelineDate, timelineFilteredLogs]);
-
   const toggleCompareEvent = useCallback((eventId: string) => {
     setCompareEventIds((previous) => {
       if (previous.includes(eventId)) return previous.filter((id) => id !== eventId);
@@ -1980,14 +1761,8 @@ export default function AttendanceRecordsPage() {
     }
     return map;
   }, [lifegroupAnalytics]);
-  const comparisonPageCount = Math.ceil(lifegroupAnalytics.perGroup.length / LIFEGROUP_PANEL_PAGE_SIZE);
   const activityPageCount = Math.ceil(lifegroupAnalytics.recentActivities.length / LIFEGROUP_PANEL_PAGE_SIZE);
-  const safeComparisonPage = Math.min(comparisonPage, Math.max(comparisonPageCount - 1, 0));
   const safeActivityPage = Math.min(activityPage, Math.max(activityPageCount - 1, 0));
-  const visibleComparisonGroups = lifegroupAnalytics.perGroup.slice(
-    safeComparisonPage * LIFEGROUP_PANEL_PAGE_SIZE,
-    (safeComparisonPage + 1) * LIFEGROUP_PANEL_PAGE_SIZE
-  );
   const visibleRecentActivities = lifegroupAnalytics.recentActivities.slice(
     safeActivityPage * LIFEGROUP_PANEL_PAGE_SIZE,
     (safeActivityPage + 1) * LIFEGROUP_PANEL_PAGE_SIZE
@@ -2475,27 +2250,7 @@ export default function AttendanceRecordsPage() {
           </div>
           {reportNotice ? <div className="status-info">{reportNotice}</div> : null}
 
-          <section className="analytics-panel">
-            <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Attendance & Activity</h2>
-            <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              <CategoryBarsPanel
-                title="Attendance by Lifegroup"
-                items={lifegroupAnalytics.attendanceByGroup}
-                emptyText="No lifegroup attendance records in this range."
-              />
-              <CategoryBarsPanel
-                title="Members by Lifegroup"
-                items={lifegroupAnalytics.membersByGroup}
-                emptyText="No lifegroup memberships found."
-              />
-              <LineChart
-                title="Attendance Over Time"
-                items={lifegroupAnalytics.trend}
-                emptyText="No lifegroup attendance in this range."
-                emptyHint="Attendance is taken from lifegroup_attendance, not from membership or RSVP records."
-              />
-            </div>
-          </section>
+          <LifegroupAnalyticsModule />
 
           {lifegroupAnalytics.attentionList.length > 0 ? (
             <section className="rounded-2xl border border-[#e5cf93] bg-[#fffaf0] p-4">
@@ -2518,96 +2273,6 @@ export default function AttendanceRecordsPage() {
               </div>
             </section>
           ) : null}
-
-          <section className="analytics-panel">
-            <div className="flex flex-wrap items-end justify-between gap-2">
-              <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Lifegroup Comparison</h2>
-              {lifegroupAnalytics.reportAttendanceAvailable ? (
-                <p className="text-xs text-[#71847c]">Per-activity attendance uses lifegroup_attendance_report where available.</p>
-              ) : null}
-            </div>
-            <div className="mt-4 overflow-x-auto">
-              <table className="w-full min-w-[920px] border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
-                    <th className="px-2 py-2">Lifegroup</th>
-                    <th className="px-2 py-2">Status</th>
-                    <th className="px-2 py-2">Leader</th>
-                    <th className="px-2 py-2 text-right">Members</th>
-                    <th className="px-2 py-2 text-right">Active</th>
-                    <th className="px-2 py-2 text-right">Activities</th>
-                    <th className="px-2 py-2 text-right">Attendance</th>
-                    <th className="px-2 py-2 text-right">Avg / Activity</th>
-                    <th className="px-2 py-2 text-right">Δ vs Prev Period</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleComparisonGroups.map((group) => (
-                    <tr key={group.id} className="border-b border-[#edf2ef] last:border-0">
-                      <td className="px-2 py-3 font-semibold text-[#2f4d43]">{group.name}</td>
-                      <td className="px-2 py-3 capitalize text-[#5e766c]">{group.status}</td>
-                      <td className="px-2 py-3 text-[#5e766c]">{group.leaderName}</td>
-                      <td className="px-2 py-3 text-right text-[#315349]">{group.members}</td>
-                      <td className="px-2 py-3 text-right text-[#315349]">{group.activeMembers}</td>
-                      <td className="px-2 py-3 text-right text-[#315349]">{group.activities}</td>
-                      <td className="px-2 py-3 text-right text-[#315349]">{group.attendance}</td>
-                      <td className="px-2 py-3 text-right text-[#315349]">
-                        {group.activities > 0 ? group.avgAttendancePerActivity.toFixed(1) : "—"}
-                      </td>
-                      <td
-                        className={`px-2 py-3 text-right font-semibold ${
-                          group.attendanceDeltaPct === null
-                            ? "text-[#71847c]"
-                            : group.attendanceDeltaPct > 0
-                              ? "text-[#0f766e]"
-                              : group.attendanceDeltaPct < 0
-                                ? "text-[#b91c1c]"
-                                : "text-[#5e766c]"
-                        }`}
-                      >
-                        {group.attendanceDeltaPct === null
-                          ? "—"
-                          : `${group.attendanceDeltaPct > 0 ? "+" : ""}${group.attendanceDeltaPct}%`}
-                      </td>
-                    </tr>
-                  ))}
-                  {!lifegroupAnalytics.perGroup.length ? (
-                    <tr>
-                      <td colSpan={9} className="px-2 py-6 text-center text-sm text-[#71847c]">
-                        No lifegroups found. Check that lifegroups are available to your account.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-              <p className="mt-2 text-[11px] text-[#71847c]">
-                Δ compares attendance per activity against the previous equal-length period (
-                {lifegroupPrevRange.from} to {lifegroupPrevRange.to}). A dash means the previous period had no
-                activities to compare against.
-              </p>
-            </div>
-            {comparisonPageCount > 1 ? (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  className="btn-ghost px-3 py-1.5 text-xs"
-                  onClick={() => setComparisonPage(Math.max(0, safeComparisonPage - 1))}
-                  disabled={safeComparisonPage === 0}
-                >
-                  Previous
-                </button>
-                <span className="text-xs text-[#71847c]">Page {safeComparisonPage + 1} of {comparisonPageCount}</span>
-                <button
-                  type="button"
-                  className="btn-ghost px-3 py-1.5 text-xs"
-                  onClick={() => setComparisonPage(Math.min(comparisonPageCount - 1, safeComparisonPage + 1))}
-                  disabled={safeComparisonPage === comparisonPageCount - 1}
-                >
-                  Next
-                </button>
-              </div>
-            ) : null}
-          </section>
 
           {selectedLifegroupId !== "all" ? (
             <section className="analytics-panel">
@@ -2653,93 +2318,6 @@ export default function AttendanceRecordsPage() {
                   </tbody>
                 </table>
               </div>
-            </section>
-          ) : null}
-
-          {lifegroupAnalytics.memberComparison ? (
-            <section className="analytics-panel">
-              <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">
-                Member Attendance Comparison — {lifegroupAnalytics.memberComparison.groupName}
-              </h2>
-              <p className="mt-1 text-sm text-[#5d7269]">
-                {lifegroupAnalytics.memberComparison.rows.length}{" "}
-                {lifegroupAnalytics.memberComparison.rows.length === 1 ? "member" : "members"} • total attendance{" "}
-                {lifegroupAnalytics.memberComparison.totalAttendance} • average attendance{" "}
-                {lifegroupAnalytics.memberComparison.averagePercent === null
-                  ? "—"
-                  : `${lifegroupAnalytics.memberComparison.averagePercent}%`}
-                . Eligible counts only activities on or after the effective join date of each member.
-              </p>
-
-              {lifegroupAnalytics.memberComparison.rows.length === 0 ? (
-                <p className="mt-4 text-sm text-[#4f675e]">
-                  No members belong to this lifegroup yet, so there is nothing to compare.
-                </p>
-              ) : (
-                <>
-                  <div className="mt-4 overflow-x-auto">
-                    <table className="w-full min-w-[880px] border-collapse text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-[#d6e1dd] text-[10px] uppercase tracking-[0.08em] text-[#71847c]">
-                          <th className="px-2 py-2">Rank</th>
-                          <th className="px-2 py-2">Member</th>
-                          <th className="px-2 py-2 text-right">Attended</th>
-                          <th className="px-2 py-2 text-right">Eligible (since joined)</th>
-                          <th className="px-2 py-2 text-right">Attendance %</th>
-                          <th className="px-2 py-2 text-right">Last Attended</th>
-                          <th className="px-2 py-2">Recent</th>
-                          <th className="px-2 py-2">Share of period</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {lifegroupAnalytics.memberComparison.rows.map((row, index) => (
-                          <tr key={row.userId} className="border-b border-[#edf2ef] last:border-0">
-                            <td className="px-2 py-2.5 font-semibold text-[#315349]">#{index + 1}</td>
-                            <td className="px-2 py-2.5">
-                              <p className="font-semibold text-[#2f4d43]">{row.name}</p>
-                              <p className="text-xs capitalize text-[#5e766c]">
-                                {row.role} • {row.status}
-                                {row.joinUnknown ? " • join date unknown" : ""}
-                              </p>
-                            </td>
-                            <td className="px-2 py-2.5 text-right text-[#315349]">{row.attended}</td>
-                            <td className="px-2 py-2.5 text-right text-[#5e766c]">{row.eligible}</td>
-                            <td className="px-2 py-2.5 text-right font-semibold text-[#315349]">
-                              {row.percent === null ? "—" : `${row.percent}%`}
-                            </td>
-                            <td className="px-2 py-2.5 text-right text-[#5e766c]">
-                              {row.lastAttended ? formatDateMMDDYY(row.lastAttended) : "Never in range"}
-                            </td>
-                            <td className="px-2 py-2.5 text-[#5e766c]">{row.streakLabel}</td>
-                            <td className="px-2 py-2.5">
-                              <div className="h-2 w-full min-w-[120px] overflow-hidden rounded-full bg-[#e8f0ec]">
-                                <div
-                                  className="h-full rounded-full bg-[#385b4f] transition-[width] duration-300"
-                                  style={{ width: `${row.percent ?? 0}%` }}
-                                />
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <h3 className="mt-6 font-[var(--font-heading)] text-base text-[#23332d]">
-                    Attendance trend per member
-                  </h3>
-                  <div className="mt-3 grid gap-4 lg:grid-cols-2">
-                    {lifegroupAnalytics.memberComparison.rows.map((row) => (
-                      <LineChart
-                        key={row.userId}
-                        title={`${row.name} — ${row.percent}%`}
-                        items={row.trend}
-                        emptyText="No attendance recorded in this period yet."
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
             </section>
           ) : null}
 
@@ -3309,8 +2887,8 @@ export default function AttendanceRecordsPage() {
           ) : null}
         </div>
         <p className="mt-1 text-xs text-[#5d736a]">
-          The timeline loads the full attendance history and respects the Ministry / Attendance Type / Linked Event
-          filters above.
+          The shared Events analytics below renders the interactive attendance timeline. The Event Comparison card still
+          respects the Ministry / Attendance Type / Linked Event filters above.
         </p>
 
         {timelineStatus === "loading" ? (
@@ -3324,222 +2902,8 @@ export default function AttendanceRecordsPage() {
 
         {timelineStatus === "ready" ? (
           <>
-            <div className="card mt-4 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setTimelineGranularity("month")}
-                className={timelineGranularity === "month" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
-              >
-                By Month
-              </button>
-              <button
-                type="button"
-                onClick={() => setTimelineGranularity("year")}
-                className={timelineGranularity === "year" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
-              >
-                By Year
-              </button>
-
-              {timelineGranularity === "month" ? (
-                <select
-                  className="field-input max-w-[220px]"
-                  value={timelineMonth}
-                  onChange={(event) => {
-                    setTimelineMonth(event.target.value);
-                    setSelectedTimelineDate(null);
-                  }}
-                >
-                  {timelineMonthOptions.length === 0 ? <option value="">No months with data</option> : null}
-                  {timelineMonthOptions.map((month) => (
-                    <option key={month} value={month}>
-                      {formatMonthKeyLabel(month)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <select
-                  className="field-input max-w-[160px]"
-                  value={timelineYear}
-                  onChange={(event) => {
-                    setTimelineYear(event.target.value);
-                    setSelectedTimelineDate(null);
-                  }}
-                >
-                  {timelineYearOptions.length === 0 ? <option value="">No years with data</option> : null}
-                  {timelineYearOptions.map((year) => (
-                    <option key={year} value={year}>
-                      {year}
-                    </option>
-                  ))}
-                </select>
-              )}
-
-              <label className="flex items-center gap-2 text-xs font-semibold text-[#35564a]">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 accent-[#385b4f]"
-                  checked={showPrevYear}
-                  onChange={(event) => setShowPrevYear(event.target.checked)}
-                />
-                Compare previous year
-              </label>
-              {timelineGranularity === "month" ? (
-                <label className="flex items-center gap-2 text-xs font-semibold text-[#35564a]">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-[#385b4f]"
-                    checked={showPrevMonth}
-                    onChange={(event) => setShowPrevMonth(event.target.checked)}
-                  />
-                  Compare previous month
-                </label>
-              ) : null}
-              {selectedTimelineDate ? (
-                <button
-                  type="button"
-                  className="btn-ghost px-3 py-1.5 text-xs"
-                  onClick={() => setSelectedTimelineDate(null)}
-                >
-                  Clear day selection
-                </button>
-              ) : null}
-            </div>
-
             <div className="mt-4">
-              <AttendanceTimelinePanel
-                title={timelinePointData.title ? `Attendance — ${timelinePointData.title}` : "Attendance"}
-                granularity={timelineGranularity}
-                points={timelinePointData.points}
-                showPrevYear={showPrevYear}
-                showPrevMonth={showPrevMonth}
-                hasPrevYearData={timelinePointData.hasPrevYearData}
-                hasPrevMonthData={timelinePointData.hasPrevMonthData}
-                selectedDate={selectedTimelineDate}
-                onSelectDate={(date) => setSelectedTimelineDate((previous) => (previous === date ? null : date))}
-              />
-            </div>
-
-            {timelineDrillDown ? (
-              <div className="mt-4 rounded-2xl border border-[#9dbfb1] bg-[#eef4f1] p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-[var(--font-heading)] text-lg text-[#25493e]">
-                    {new Date(`${timelineDrillDown.date}T00:00:00`).toLocaleDateString(undefined, {
-                      weekday: "long",
-                      month: "long",
-                      day: "numeric",
-                      year: "numeric"
-                    })}
-                  </h3>
-                  <p className="text-xs font-semibold text-[#35564a]">
-                    {timelineDrillDown.uniqueAttendees} attendees • {timelineDrillDown.checkIns} check-ins
-                    {timelineDrillDown.newcomerCount > 0 ? ` • ${timelineDrillDown.newcomerCount} newcomers` : ""}
-                  </p>
-                </div>
-
-                {timelineDrillDown.sunday ? (
-                  <div className="mt-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">
-                      Sunday Service — First vs Second
-                    </p>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                      <div className="rounded-xl bg-white/80 px-3 py-2">
-                        <p className="text-[11px] font-semibold text-[#527064]">Overall</p>
-                        <p className="font-[var(--font-heading)] text-xl text-[#22322d]">
-                          {timelineDrillDown.sunday.overall}
-                        </p>
-                      </div>
-                      <div className="rounded-xl bg-white/80 px-3 py-2">
-                        <p className="text-[11px] font-semibold text-[#527064]">First Service</p>
-                        <p className="font-[var(--font-heading)] text-xl text-[#22322d]">
-                          {timelineDrillDown.sunday.firstService}
-                        </p>
-                        <div className="mt-1 h-2 rounded-full bg-[#d5dfdb]">
-                          <div
-                            className="h-2 rounded-full bg-[#2563eb]"
-                            style={{
-                              width: `${
-                                timelineDrillDown.sunday.overall > 0
-                                  ? (timelineDrillDown.sunday.firstService / timelineDrillDown.sunday.overall) * 100
-                                  : 0
-                              }%`
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div className="rounded-xl bg-white/80 px-3 py-2">
-                        <p className="text-[11px] font-semibold text-[#527064]">Second Service</p>
-                        <p className="font-[var(--font-heading)] text-xl text-[#22322d]">
-                          {timelineDrillDown.sunday.secondService}
-                        </p>
-                        <div className="mt-1 h-2 rounded-full bg-[#d5dfdb]">
-                          <div
-                            className="h-2 rounded-full bg-[#0ea5e9]"
-                            style={{
-                              width: `${
-                                timelineDrillDown.sunday.overall > 0
-                                  ? (timelineDrillDown.sunday.secondService / timelineDrillDown.sunday.overall) * 100
-                                  : 0
-                              }%`
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    <p className="mt-2 text-[11px] text-[#5d736a]">
-                      The timeline plots the combined day total; each Sunday counts once per member (First or Second
-                      Service).
-                    </p>
-                  </div>
-                ) : null}
-
-                {timelineDrillDown.contexts.length > 0 ? (
-                  <div className="mt-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Attendance by type</p>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {timelineDrillDown.contexts.map((context) => (
-                        <div key={context.label} className="rounded-xl bg-white/80 px-3 py-2 text-sm">
-                          <span className="font-semibold text-[#315349]">{context.label}</span>
-                          <span className="ml-2 text-[#4f675e]">
-                            {context.people} people • {context.checkIns} check-ins
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {timelineDrillDown.events.length > 0 ? (
-                  <div className="mt-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Events on this day</p>
-                    <div className="mt-2 grid gap-2">
-                      {timelineDrillDown.events.map((event) => (
-                        <div key={event.id} className="rounded-xl bg-white/80 px-3 py-2">
-                          <p className="font-semibold text-[#315349]">
-                            {event.title}
-                            {event.event_type ? ` • ${event.event_type}` : ""}
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-[#5d736a]">
-                            Feedback analytics for this event arrive with the Event Feedback module (P4).
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {timelineDrillDown.checkIns === 0 && timelineDrillDown.events.length > 0 ? (
-                  <p className="mt-3 text-sm text-[#5d736a]">
-                    This event day has no recorded attendance yet.
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <DonutStatPanel title="By Ministry" items={recordsByGroup} emptyText="No network attendance yet." centerLabel="check-ins" />
-              <DonutStatPanel title="Age" items={demographicAnalytics.ageDistribution} emptyText="No age data available." centerLabel="attendees" />
-              <DonutStatPanel title="Gender" items={demographicAnalytics.genderDistribution} emptyText="No gender data available." centerLabel="attendees" />
-              <DonutStatPanel title="Newcomers" items={demographicAnalytics.newcomersByNetwork} emptyText="No newcomer profiles available." centerLabel="newcomers" />
+              <EventsAnalyticsModule />
             </div>
 
             <div className="card mt-4 space-y-3">

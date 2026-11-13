@@ -6,9 +6,10 @@ import Image from "next/image";
 import CalendarImage from "@/components/calendar-image";
 import { hasSupabaseEnv, supabase, supabaseEnvIssue } from "@/lib/supabase";
 import { AttendanceLog, CalendarImageRow, EventItem, UserFace } from "@/types";
-import LineChart from "@/components/line-chart";
-import { GROUP_COLORS } from "@/lib/analytics-colors";
-import { NETWORK_LABELS, buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
+import { EventsAnalyticsModule } from "@/components/analytics/events-module";
+import { LifegroupAnalyticsModule } from "@/components/analytics/lifegroup-module";
+import { MembersAnalyticsModule } from "@/components/analytics/members-module";
+import { buildStudentNetworkMap, createEmptyNetworkCounts } from "@/lib/networks";
 import { isMissingEventTypeColumnError } from "@/lib/attendance";
 import { toLocalDateInput } from "@/lib/date";
 import {
@@ -28,9 +29,9 @@ import {
   type InsightAttendanceRow
 } from "@/lib/insights";
 import type { EventFeedbackSummary } from "@/components/event-feedback";
+import { MIN_ANALYTICS_DATE } from "@/lib/analytics-data";
 
-type AnalyticsView = "mix" | "eventAttendance" | "newcomerAttendance";
-const MIN_ANALYTICS_DATE = "2026-01-01";
+type AnalyticsView = "events" | "lifegroup" | "members";
 const DEFAULT_EVENT_POSTER = "/default event poster.jpg";
 const EVENTS_PER_PAGE = 3;
 
@@ -60,7 +61,7 @@ export default function HomePage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [calendarImage, setCalendarImage] = useState<CalendarImageRow | null>(null);
   const [status, setStatus] = useState("Loading dashboard analytics...");
-  const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("mix");
+  const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("events");
   const [eventPage, setEventPage] = useState(0);
   // P7 — automated insights (admin-gated)
   const [isAdmin, setIsAdmin] = useState(false);
@@ -315,64 +316,6 @@ export default function HomePage() {
     };
   }, [attendance, userNetworkMap, users]);
 
-  const timelineRows = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof createEmptyNetworkCounts>>();
-
-    for (const scan of attendance) {
-      if (scan.attended_date < MIN_ANALYTICS_DATE) continue;
-
-      if (!map.has(scan.attended_date)) {
-        map.set(scan.attended_date, createEmptyNetworkCounts());
-      }
-
-      const row = map.get(scan.attended_date);
-      if (!row) continue;
-
-      const networkKey = userNetworkMap.get(scan.student_id);
-      if (!networkKey) continue;
-      row[networkKey] += 1;
-    }
-
-    return Array.from(map.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-10)
-      .map(([date, row]) => ({
-        label: date.slice(5).replace("-", "/"),
-        value: Object.values(row).reduce((total, count) => total + count, 0)
-      }));
-  }, [attendance, userNetworkMap]);
-
-  const eventAttendanceItems = useMemo(() => {
-    const counts: Record<string, number> = {
-      "First Service": 0,
-      "Second Service": 0,
-      "Prayer Meeting": 0,
-      Rooftop: 0,
-      "Men's Network": 0,
-      "Women's Network": 0
-    };
-
-    for (const scan of attendance) {
-      const normalizedGroup = scan.attendance_group === "Male"
-        ? "Men's Network"
-        : scan.attendance_group === "Female"
-          ? "Women's Network"
-          : scan.attendance_group;
-
-      if (!normalizedGroup || !(normalizedGroup in counts)) continue;
-      counts[normalizedGroup] += 1;
-    }
-
-    return [
-      { label: "First Service", value: counts["First Service"], color: "#2563eb" },
-      { label: "Second Service", value: counts["Second Service"], color: "#0ea5e9" },
-      { label: "Prayer Meeting", value: counts["Prayer Meeting"], color: "#f59e0b" },
-      { label: "Rooftop", value: counts.Rooftop, color: "#8b5cf6" },
-      { label: "Men's Network", value: counts["Men's Network"], color: "#10b981" },
-      { label: "Women's Network", value: counts["Women's Network"], color: "#ef4444" }
-    ];
-  }, [attendance]);
-
   const totalEventPages = Math.ceil(events.length / EVENTS_PER_PAGE);
   const safeEventPage = Math.min(eventPage, Math.max(totalEventPages - 1, 0));
   const visibleEvents = events.slice(safeEventPage * EVENTS_PER_PAGE, (safeEventPage + 1) * EVENTS_PER_PAGE);
@@ -481,73 +424,35 @@ export default function HomePage() {
         </article>
       </section>
 
-      <div>
-        <section className="flex flex-col space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => setAnalyticsView("mix")} className={analyticsView === "mix" ? "btn-primary" : "btn-ghost"}>Network Attendance</button>
-            <button type="button" onClick={() => setAnalyticsView("eventAttendance")} className={analyticsView === "eventAttendance" ? "btn-primary" : "btn-ghost"}>Event Attendance</button>
-            <button type="button" onClick={() => setAnalyticsView("newcomerAttendance")} className={analyticsView === "newcomerAttendance" ? "btn-primary" : "btn-ghost"}>Newcomer Attendance</button>
-          </div>
+      <section className="flex flex-col space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAnalyticsView("events")}
+            className={analyticsView === "events" ? "btn-primary" : "btn-ghost"}
+          >
+            Events
+          </button>
+          <button
+            type="button"
+            onClick={() => setAnalyticsView("lifegroup")}
+            className={analyticsView === "lifegroup" ? "btn-primary" : "btn-ghost"}
+          >
+            Lifegroup
+          </button>
+          <button
+            type="button"
+            onClick={() => setAnalyticsView("members")}
+            className={analyticsView === "members" ? "btn-primary" : "btn-ghost"}
+          >
+            Members
+          </button>
+        </div>
 
-          {analyticsView === "mix" ? (
-            <LineChart title="Daily Network Attendance" items={timelineRows} emptyText="No network attendance data yet." />
-          ) : null}
-
-          {analyticsView === "eventAttendance" ? (
-            <LineChart title="Attendance by Service and Event" items={eventAttendanceItems} emptyText="No event attendance data yet." />
-          ) : null}
-
-          {analyticsView === "newcomerAttendance" ? (
-            <LineChart
-              title="Newcomer Attendance by Network"
-              items={[
-                { label: NETWORK_LABELS.kidsMinistry, value: analytics.newcomerByGroup.kidsMinistry, color: GROUP_COLORS.kidsMinistry },
-                { label: NETWORK_LABELS.youthMinistry, value: analytics.newcomerByGroup.youthMinistry, color: GROUP_COLORS.youthMinistry },
-                { label: NETWORK_LABELS.youngProfessionals, value: analytics.newcomerByGroup.youngProfessionals, color: GROUP_COLORS.youngProfessionals },
-                { label: NETWORK_LABELS.mensNetwork, value: analytics.newcomerByGroup.mensNetwork, color: GROUP_COLORS.mensNetwork },
-                { label: NETWORK_LABELS.womensNetwork, value: analytics.newcomerByGroup.womensNetwork, color: GROUP_COLORS.womensNetwork }
-              ]}
-              emptyText="No newcomer scans today."
-            />
-          ) : null}
-
-          {analyticsView === "eventAttendance" ? (
-            <section className="analytics-panel">
-              <h3 className="font-[var(--font-heading)] text-lg text-[#24362f]">Attendance Logs with Date and Event</h3>
-              <div className="mt-3 space-y-2">
-                {attendance.length === 0 ? (
-                  <p className="text-sm text-[#5d736a]">No attendance rows for today.</p>
-                ) : (
-                  attendance
-                    .slice()
-                    .sort((a, b) => b.attended_at.localeCompare(a.attended_at))
-                    .slice(0, 12)
-                    .map((row) => {
-                      const normalizedGroup = row.attendance_group === "Male"
-                        ? "Men's Network"
-                        : row.attendance_group === "Female"
-                          ? "Women's Network"
-                          : row.attendance_group;
-
-                      return (
-                        <div key={row.id} className="rounded-xl border border-[#cbd8d3] bg-white px-3 py-2 text-sm text-[#2f4d43]">
-                          <p className="font-semibold">{row.full_name}</p>
-                          <p className="text-xs text-[#5e766c]">
-                            {row.attended_date} • {new Date(row.attended_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </p>
-                          <p className="text-xs text-[#5e766c]">
-                            {normalizedGroup ?? "-"} • {row.event_id ? (eventTitleById[row.event_id] ?? "Linked Event") : "No Event"}
-                          </p>
-                        </div>
-                      );
-                    })
-                )}
-              </div>
-            </section>
-          ) : null}
-        </section>
-
-      </div>
+        {analyticsView === "events" ? <EventsAnalyticsModule /> : null}
+        {analyticsView === "lifegroup" ? <LifegroupAnalyticsModule /> : null}
+        {analyticsView === "members" ? <MembersAnalyticsModule /> : null}
+      </section>
 
       <section id="monthly-calendar" className="analytics-panel scroll-mt-6">
         <div className="section-head">

@@ -13,3 +13,6 @@ pnpm-debug.log*
 
 # Graphify knowledge graph output (rebuilt via `graphify extract . --code-only`)
 graphify-out/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
