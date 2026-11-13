@@ -10,6 +10,21 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # React 19 is a coordinated major migration: react, react-dom and their
+    # @types packages must all move together in one change. Dependabot splits
+    # them into separate PRs (react-dom+@types/react-dom, react+@types/react)
+    # that each fail npm peer resolution (ERESOLVE) on install. Hold 19.x for
+    # all four packages until the migration is done deliberately; remove these
+    # rules once React 19 has been adopted.
+    ignore:
+      - dependency-name: "react"
+        versions: [">=19"]
+      - dependency-name: "react-dom"
+        versions: [">=19"]
+      - dependency-name: "@types/react"
+        versions: [">=19"]
+      - dependency-name: "@types/react-dom"
+        versions: [">=19"]
 
   - package-ecosystem: github-actions
     directory: "/"
