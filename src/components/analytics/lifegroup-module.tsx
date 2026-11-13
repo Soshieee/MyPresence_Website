@@ -568,16 +568,24 @@ export function LifegroupAnalyticsModule() {
           <label className="field-label" htmlFor="lifegroup-member">Member</label>
           <select
             id="lifegroup-member"
-            className="field-input max-w-[220px]"
+            className="field-input max-w-[220px] disabled:cursor-not-allowed disabled:bg-[#eef3f1] disabled:text-[#8a9a93]"
             value={effectiveMemberId}
             onChange={(event) => setSelectedMemberId(event.target.value)}
-            disabled={memberOptions.length === 0}
+            disabled={selectedGroupId === "all" || memberOptions.length === 0}
+            aria-describedby={selectedGroupId === "all" ? "lifegroup-member-hint" : undefined}
           >
             <option value="all">All members</option>
-            {memberOptions.map((option) => (
-              <option key={option.userId} value={option.userId}>{option.name}</option>
-            ))}
+            {selectedGroupId !== "all"
+              ? memberOptions.map((option) => (
+                  <option key={option.userId} value={option.userId}>{option.name}</option>
+                ))
+              : null}
           </select>
+          {selectedGroupId === "all" ? (
+            <p id="lifegroup-member-hint" className="mt-1 text-[11px] text-[#8a9a93]">
+              Pick a lifegroup to choose a member.
+            </p>
+          ) : null}
         </div>
       </section>
 

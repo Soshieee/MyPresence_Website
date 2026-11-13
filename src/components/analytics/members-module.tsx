@@ -312,7 +312,15 @@ export function MembersAnalyticsModule() {
       });
     }
 
-    return result.sort((a, b) => a.name.localeCompare(b.name));
+    // Top absentees first: lowest period attendance (largest missed share) at
+    // the top; ties broken by fewer attendances, then name.
+    return result.sort((a, b) => {
+      const percentA = a.percent ?? -1;
+      const percentB = b.percent ?? -1;
+      if (percentA !== percentB) return percentA - percentB;
+      if (a.attended !== b.attended) return a.attended - b.attended;
+      return a.name.localeCompare(b.name);
+    });
   }, [
     attendeeIds,
     attendeeOnly,
@@ -594,7 +602,7 @@ export function MembersAnalyticsModule() {
         }`}
         note={
           showingAbsent
-            ? `Members who did not attend ${occasionLabel}. Attended and share columns describe the rest of the period; the Share of Period bar fills by how much of the period each member missed.`
+            ? `Members who did not attend ${occasionLabel}, biggest absence first. Attended and share columns describe the rest of the period; the Share of Period bar fills by how much of the period each member missed.`
             : mode === "ranking"
               ? "Eligible counts attendance occasions on or after the member's registration date. Click a member to see the events they attended."
               : selectedEvent
