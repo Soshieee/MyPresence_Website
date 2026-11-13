@@ -7,7 +7,7 @@
 // they attended in the selected period. Reuses the shared ranking table built
 // for the Lifegroup module.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MemberRankingTable, type MemberRankingRow } from "@/components/analytics/member-ranking-table";
 import { ageBucketFor, type AgeBucketKey } from "@/components/analytics/demographics";
 import { normalizeAttendanceType } from "@/lib/attendance";
@@ -57,6 +57,9 @@ export function MembersAnalyticsModule() {
   const [selectedEventId, setSelectedEventId] = useState("all");
   const [specificDate, setSpecificDate] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  // Occasion tabs (shown only when a specific date/event is selected): the
+  // attended view and the "Absent" view of everyone who did not attend.
+  const [occasionTab, setOccasionTab] = useState<"attended" | "absent">("attended");
 
   useEffect(() => {
     let active = true;
@@ -159,16 +162,65 @@ export function MembersAnalyticsModule() {
       .sort((a, b) => (b.event_date ?? "").localeCompare(a.event_date ?? ""));
   }, [events, month, effectiveYear]);
 
-  const rows = useMemo((): MemberRankingRow[] => {
-    if (status !== "ready") return [];
+  // True when a specific date or event is chosen in "Specific time or event"
+  // mode: the attended view then lists only members who attended the occasion.
+  const attendeeOnly = mode === "time" && (specificDate !== "" || selectedEventId !== "all");
 
-    const matchesMemberFilters = (user: AnalyticsUser) => {
-      if (networkFilter !== "all") {
-        if (getNetworkFromProfile(user.age, user.gender) !== networkFilter) return false;
-      }
+  const matchesMemberFilters = useCallback(
+    (user: AnalyticsUser) => {
+      if (networkFilter !== "all" && getNetworkFromProfile(user.age, user.gender) !== networkFilter) return false;
       if (ageFilter !== "all" && ageBucketFor(user.age) !== ageFilter) return false;
       return true;
-    };
+    },
+    [ageFilter, networkFilter]
+  );
+
+  // Period-wide scope (year + month + event type, without the specific
+  // occasion) powers the Absent tab so its columns keep meaning: attended
+  // counts and shares there describe the rest of the period.
+  const periodScopeLogs = useMemo(() => {
+    let scoped = yearScopedLogs;
+    if (eventTypeFilter !== "all") {
+      scoped = scoped.filter(
+        (log) => normalizeAttendanceType(log.attendance_context, log.attendance_group) === eventTypeFilter
+      );
+    }
+    return scoped;
+  }, [eventTypeFilter, yearScopedLogs]);
+
+  const periodOccasionDates = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const log of periodScopeLogs) {
+      const key = occasionKey(log);
+      if (!map.has(key)) map.set(key, log.attended_date);
+    }
+    return map;
+  }, [periodScopeLogs]);
+
+  const periodStatsByMember = useMemo(() => {
+    const stats = new Map<string, { count: number; last: string | null }>();
+    const seen = new Set<string>();
+    for (const log of periodScopeLogs) {
+      const key = `${log.student_id}|${occasionKey(log)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const entry = stats.get(log.student_id) ?? { count: 0, last: null };
+      entry.count += 1;
+      if (!entry.last || log.attended_date > entry.last) entry.last = log.attended_date;
+      stats.set(log.student_id, entry);
+    }
+    return stats;
+  }, [periodScopeLogs]);
+
+  // Members present at the selected occasion (deduplicated by student).
+  const attendeeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const log of scopedLogs) ids.add(log.student_id);
+    return ids;
+  }, [scopedLogs]);
+
+  const rows = useMemo((): MemberRankingRow[] => {
+    if (status !== "ready") return [];
 
     const attendedOccasionsByMember = new Map<string, { count: number; last: string | null }>();
     const seenOccasions = new Set<string>();
@@ -181,9 +233,6 @@ export function MembersAnalyticsModule() {
       if (!entry.last || log.attended_date > entry.last) entry.last = log.attended_date;
       attendedOccasionsByMember.set(log.student_id, entry);
     }
-
-    const attendeeOnly =
-      mode === "time" && (specificDate !== "" || selectedEventId !== "all");
 
     const result: MemberRankingRow[] = [];
     for (const user of users) {
@@ -223,7 +272,41 @@ export function MembersAnalyticsModule() {
     }
 
     return result;
-  }, [ageFilter, mode, networkFilter, occasionDates, scopedLogs, selectedEventId, specificDate, status, users]);
+  }, [attendeeOnly, matchesMemberFilters, mode, occasionDates, scopedLogs, status, users]);
+
+  // "Absent" tab: matching members with no attendance at the selected occasion.
+  // Attended/eligible/percent describe the rest of the period; the table
+  // renders the share bar full-width in absentMode to mark the missed occasion.
+  const absentRows = useMemo((): MemberRankingRow[] => {
+    if (status !== "ready" || !attendeeOnly) return [];
+
+    const result: MemberRankingRow[] = [];
+    for (const user of users) {
+      if (!matchesMemberFilters(user)) continue;
+      if (attendeeIds.has(user.student_id)) continue;
+
+      const registered = toDateKey(user.created_at ?? null);
+      const eligible =
+        registered === null
+          ? periodOccasionDates.size
+          : Array.from(periodOccasionDates.values()).filter((date) => date >= registered).length;
+      const stats = periodStatsByMember.get(user.student_id);
+      const attendedCount = stats?.count ?? 0;
+
+      result.push({
+        userId: user.student_id,
+        name: user.full_name,
+        meta: `${user.newcomer ? "Newcomer" : "Member"} • ${user.is_active === false ? "Inactive" : "Active"}`,
+        attended: attendedCount,
+        eligible,
+        percent: eligible > 0 ? Math.round((attendedCount / eligible) * 1000) / 10 : null,
+        lastAttended: stats?.last ?? null,
+        joinUnknown: registered === null
+      });
+    }
+
+    return result.sort((a, b) => a.name.localeCompare(b.name));
+  }, [attendeeIds, attendeeOnly, matchesMemberFilters, periodOccasionDates, periodStatsByMember, status, users]);
 
   const selectedMemberEvents = useMemo(() => {
     if (!selectedUserId) return [];
@@ -261,8 +344,10 @@ export function MembersAnalyticsModule() {
     );
   }
 
-  const totalAttendance = rows.reduce((sum, row) => sum + row.attended, 0);
-  const percents = rows.map((row) => row.percent).filter((value): value is number => value !== null);
+  const showingAbsent = attendeeOnly && occasionTab === "absent";
+  const activeRows = showingAbsent ? absentRows : rows;
+  const totalAttendance = activeRows.reduce((sum, row) => sum + row.attended, 0);
+  const percents = activeRows.map((row) => row.percent).filter((value): value is number => value !== null);
   const averagePercent =
     percents.length > 0 ? Math.round((percents.reduce((sum, value) => sum + value, 0) / percents.length) * 10) / 10 : null;
   const periodLabel = specificDate
@@ -271,6 +356,7 @@ export function MembersAnalyticsModule() {
       ? effectiveYear
       : formatMonthKey(`${effectiveYear}-${month}`);
   const selectedEvent = selectedEventId === "all" ? null : eventById.get(selectedEventId) ?? null;
+  const occasionLabel = selectedEvent?.title ?? (specificDate ? formatDayLabel(specificDate) : "this selection");
   const selectedMemberName = selectedUserId
     ? rows.find((row) => row.userId === selectedUserId)?.name ?? "Member"
     : "";
@@ -286,6 +372,7 @@ export function MembersAnalyticsModule() {
               onClick={() => {
                 setMode("ranking");
                 setSelectedUserId(null);
+                setOccasionTab("attended");
               }}
               className={mode === "ranking" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
             >
@@ -296,6 +383,7 @@ export function MembersAnalyticsModule() {
               onClick={() => {
                 setMode("time");
                 setSelectedUserId(null);
+                setOccasionTab("attended");
               }}
               className={mode === "time" ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
             >
@@ -316,6 +404,7 @@ export function MembersAnalyticsModule() {
               setSpecificDate("");
               setSelectedEventId("all");
               setSelectedUserId(null);
+              setOccasionTab("attended");
             }}
           >
             {yearOptions.length === 0 ? <option value="">No years with data</option> : null}
@@ -333,7 +422,12 @@ export function MembersAnalyticsModule() {
             value={month}
             onChange={(event) => {
               setMonth(event.target.value);
+              // Events and dates are scoped to the period — clear the stale
+              // occasion picks the same way the year selector does.
+              setSpecificDate("");
+              setSelectedEventId("all");
               setSelectedUserId(null);
+              setOccasionTab("attended");
             }}
           >
             <option value="all">Whole year</option>
@@ -351,7 +445,11 @@ export function MembersAnalyticsModule() {
             value={eventTypeFilter}
             onChange={(event) => {
               setEventTypeFilter(event.target.value as EventTypeFilter);
+              // A previously chosen event belongs to another type — fall back
+              // to "Any event in period" instead of staying stuck on it.
+              setSelectedEventId("all");
               setSelectedUserId(null);
+              setOccasionTab("attended");
             }}
           >
             <option value="all">All event types</option>
@@ -412,6 +510,7 @@ export function MembersAnalyticsModule() {
                   setSelectedEventId(event.target.value);
                   setSpecificDate("");
                   setSelectedUserId(null);
+                  setOccasionTab("attended");
                 }}
               >
                 <option value="all">Any event in period</option>
@@ -434,6 +533,7 @@ export function MembersAnalyticsModule() {
                   setSpecificDate(event.target.value);
                   setSelectedEventId("all");
                   setSelectedUserId(null);
+                  setOccasionTab("attended");
                 }}
               />
             </div>
@@ -441,27 +541,65 @@ export function MembersAnalyticsModule() {
         )}
       </section>
 
+      {attendeeOnly ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setOccasionTab("attended")}
+            className={showingAbsent ? "btn-ghost px-3 py-1.5 text-xs" : "btn-primary px-3 py-1.5 text-xs"}
+          >
+            Attended ({rows.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setOccasionTab("absent")}
+            className={showingAbsent ? "btn-primary px-3 py-1.5 text-xs" : "btn-ghost px-3 py-1.5 text-xs"}
+          >
+            Absent ({absentRows.length})
+          </button>
+        </div>
+      ) : null}
+
       <MemberRankingTable
-        title={mode === "ranking" ? "Member Attendance Ranking" : `Member Attendance — ${periodLabel}`}
-        summary={`${rows.length} ${rows.length === 1 ? "member" : "members"} • total attendance ${totalAttendance}${
+        key={`${mode}-${showingAbsent ? "absent" : "attended"}`}
+        title={
+          showingAbsent
+            ? `Absent Members — ${periodLabel}`
+            : mode === "ranking"
+              ? "Member Attendance Ranking"
+              : `Member Attendance — ${periodLabel}`
+        }
+        summary={`${
+          activeRows.length
+        } ${activeRows.length === 1 ? "member" : "members"} • total attendance ${totalAttendance}${
           averagePercent === null ? "" : ` • average attendance ${averagePercent}%`
         }`}
         note={
-          mode === "ranking"
-            ? "Eligible counts attendance occasions on or after the member's registration date. Click a member to see the events they attended."
-            : selectedEvent
-              ? `Showing members who attended ${selectedEvent.title}. Click a member to see their attended events.`
-              : "No rank view: members are listed alphabetically. Click a member to see the events they attended."
+          showingAbsent
+            ? `Members who did not attend ${occasionLabel}. Attended and share columns describe the rest of the period; the filled bar marks the missed occasion.`
+            : mode === "ranking"
+              ? "Eligible counts attendance occasions on or after the member's registration date. Click a member to see the events they attended."
+              : selectedEvent
+                ? `Showing members who attended ${selectedEvent.title}. Click a member to see their attended events.`
+                : "No rank view: members are listed alphabetically. Click a member to see the events they attended."
         }
-        rows={rows}
+        rows={activeRows}
         showRank={mode === "ranking"}
+        pageSize={5}
+        absentMode={showingAbsent}
         emptyText={
-          mode === "ranking"
-            ? "No members match the current filters."
-            : "No members attended this selection."
+          showingAbsent
+            ? "Everyone attended this occasion — nobody is absent."
+            : mode === "ranking"
+              ? "No members match the current filters."
+              : "No members attended this selection."
         }
-        selectedUserId={selectedUserId}
-        onSelectRow={(row) => setSelectedUserId((previous) => (previous === row.userId ? null : row.userId))}
+        selectedUserId={showingAbsent ? null : selectedUserId}
+        onSelectRow={
+          showingAbsent
+            ? undefined
+            : (row) => setSelectedUserId((previous) => (previous === row.userId ? null : row.userId))
+        }
       />
 
       {selectedUserId ? (

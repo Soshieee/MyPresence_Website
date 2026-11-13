@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import CalendarImage from "@/components/calendar-image";
@@ -69,6 +69,39 @@ export default function HomePage() {
   const [insightsStatus, setInsightsStatus] = useState<"loading" | "ready">("loading");
   const [insightsNotice, setInsightsNotice] = useState("");
   const insightsLoadedRef = useRef(false);
+
+  // The full insights content lives in a modal; the section above renders only
+  // a compact summary bar whose "View insights" button opens it.
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const insightsTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const openInsights = useCallback(() => setInsightsOpen(true), []);
+  const closeInsights = useCallback(() => {
+    setInsightsOpen(false);
+    // Hand focus back to the "View insights" button so keyboard users resume
+    // exactly where the modal took it from.
+    insightsTriggerRef.current?.focus();
+  }, []);
+
+  // Stable callback ref so the dialog is focused once when it mounts.
+  const focusModalDialog = useCallback((node: HTMLDivElement | null) => {
+    if (node) node.focus();
+  }, []);
+
+  // While the modal is open: Escape closes it and the page behind stops scrolling.
+  useEffect(() => {
+    if (!insightsOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeInsights();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [closeInsights, insightsOpen]);
 
   const range = useMemo(() => {
     const today = new Date();
@@ -320,12 +353,23 @@ export default function HomePage() {
   const safeEventPage = Math.min(eventPage, Math.max(totalEventPages - 1, 0));
   const visibleEvents = events.slice(safeEventPage * EVENTS_PER_PAGE, (safeEventPage + 1) * EVENTS_PER_PAGE);
 
+  // Summary-bar counts: derived from the same array the modal renders, so the
+  // bar and the modal can never disagree.
+  const alertCount = insights.filter((insight) => insight.severity === "review").length;
+  const noteCount = insights.length - alertCount;
+  const topAlert = insights.find((insight) => insight.severity === "review") ?? null;
+
   return (
     <div className="space-y-8 reveal">
       <section className="card overflow-hidden bg-gradient-to-br from-[#f7fbf9] to-[#ecf3f0]">
         <div className="section-head">
-          <div>
-            <h1 className="page-title font-[var(--font-heading)]">Home Dashboard</h1>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <h1 className="page-title font-[var(--font-heading)]">Home Dashboard</h1>
+              <span className="max-w-full rounded-full border border-[#b8cdc5] bg-[#edf5f2] px-3 py-1 text-[11px] font-medium leading-snug text-[#37564b]">
+                {status}
+              </span>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -344,68 +388,169 @@ export default function HomePage() {
             </button>
           </div>
         </div>
-        <div className="status-info mt-4">{status}</div>
       </section>
 
       {isAdmin ? (
         <section className="analytics-panel" data-tour="automated-insights">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="font-[var(--font-heading)] text-xl text-[#21312b]">Automated Insights</h2>
-              <p className="mt-1 text-sm text-[#5d7269]">
-                Computed automatically on load from the latest data. Flags are review prompts with stated thresholds —
-                the administrator decides.
-              </p>
+          {/* Compact summary bar — the full insights content lives in the modal. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div className="flex items-center gap-2.5">
+              <h2 className="font-[var(--font-heading)] text-lg text-[#21312b]">Automated Insights</h2>
+              <span className="rounded-full border border-[#d7b46a] bg-[#fff8e8] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a5a17]">
+                Administrator
+              </span>
             </div>
-            <span className="rounded-full border border-[#d7b46a] bg-[#fff8e8] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a5a17]">
-              Administrator
-            </span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#4f675e]">
+              {alertCount > 0 ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span aria-hidden className="inline-block h-2 w-2 rounded-full bg-[#c2703d]" />
+                  {alertCount} {alertCount === 1 ? "alert" : "alerts"}
+                </span>
+              ) : null}
+              {noteCount > 0 ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span aria-hidden className="inline-block h-2 w-2 rounded-full bg-[#9db1a9]" />
+                  {noteCount} {noteCount === 1 ? "note" : "notes"}
+                </span>
+              ) : null}
+              {topAlert ? (
+                <span className="max-w-[300px] truncate rounded-full border border-[#e3b894] bg-[#fff8f3] px-2.5 py-1 text-[11px] font-semibold text-[#a15c2b]">
+                  {topAlert.title}
+                </span>
+              ) : null}
+            </div>
+            <button
+              ref={insightsTriggerRef}
+              type="button"
+              onClick={openInsights}
+              className="btn-ghost px-4 py-2 text-xs"
+            >
+              View insights
+            </button>
           </div>
 
           {insightsStatus === "loading" ? (
-            <p className="mt-3 status-info">Evaluating monitoring rules...</p>
+            <p className="mt-2 status-info">Evaluating monitoring rules...</p>
           ) : null}
-          {insightsNotice ? <p className="mt-3 status-info">Some data was unavailable: {insightsNotice}</p> : null}
+          {insightsNotice ? <p className="mt-2 status-info">Some data was unavailable: {insightsNotice}</p> : null}
 
           {insights.length === 0 && insightsStatus === "ready" ? (
-            <p className="mt-3 text-sm text-[#5d736a]">
+            <p className="mt-2 text-sm text-[#5d736a]">
               No alerts — all monitored metrics are within their thresholds.
             </p>
           ) : null}
 
-          {insights.length > 0 ? (
-            <div className="mt-3 grid gap-2">
-              {insights.map((insight) => (
-                <div
-                  key={insight.id}
-                  className={`rounded-xl border-l-4 px-3 py-2 ${
-                    insight.severity === "review" ? "border-l-[#c2703d] bg-[#fff8f3]" : "border-l-[#b9cac3] bg-white/80"
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-semibold text-[#315349]">{insight.title}</p>
-                    {insight.href ? (
-                      <Link href={insight.href} className="btn-ghost px-2.5 py-1 text-[11px]">
-                        Review
-                      </Link>
-                    ) : null}
+          {insightsOpen ? (
+            <div
+              className="fixed inset-0 z-[80] flex items-center justify-center bg-[#16241f]/70 px-4 py-6"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="insights-modal-title"
+              onClick={closeInsights}
+            >
+              <div
+                ref={focusModalDialog}
+                tabIndex={-1}
+                className="flex max-h-[85vh] w-[92vw] max-w-[720px] flex-col overflow-hidden rounded-3xl border border-[#c3d0cb] bg-[#f8fbfa] shadow-[0_24px_80px_rgba(22,36,31,0.4)] outline-none"
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  // Keep keyboard focus cycling inside the dialog while open.
+                  if (event.key !== "Tab") return;
+                  const focusables = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLElement>(
+                      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                    )
+                  ).filter((element) => element.offsetParent !== null);
+                  if (focusables.length === 0) {
+                    event.preventDefault();
+                    return;
+                  }
+                  const first = focusables[0];
+                  const last = focusables[focusables.length - 1];
+                  if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) {
+                    event.preventDefault();
+                    last.focus();
+                  } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                  }
+                }}
+              >
+                <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[#d6e1dd] bg-gradient-to-br from-[#e9f3ef] to-[#f8fbfa] px-5 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <h2 id="insights-modal-title" className="font-[var(--font-heading)] text-lg text-[#22332d]">
+                      Automated Insights
+                    </h2>
+                    <span className="rounded-full border border-[#d7b46a] bg-[#fff8e8] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a5a17]">
+                      Administrator
+                    </span>
                   </div>
-                  <p className="mt-1 text-sm text-[#4f675e]">{insight.detail}</p>
-                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a9a93]">
-                    Rule: {insight.window}
+                  <button
+                    type="button"
+                    onClick={closeInsights}
+                    aria-label="Close insights"
+                    title="Close"
+                    className="shrink-0 rounded-full border border-[#b9cac3] bg-white/80 px-3 py-1 text-xs font-semibold text-[#35564a] hover:bg-white"
+                  >
+                    ✕
+                  </button>
+                </header>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                  <p className="text-sm text-[#5d7269]">
+                    Computed automatically on load from the latest data. Flags are review prompts with stated thresholds
+                    — the administrator decides.
+                  </p>
+
+                  {insightsStatus === "loading" ? (
+                    <p className="mt-3 status-info">Evaluating monitoring rules...</p>
+                  ) : null}
+
+                  {insights.length === 0 && insightsStatus === "ready" ? (
+                    <p className="mt-3 text-sm text-[#5d736a]">
+                      No alerts — all monitored metrics are within their thresholds.
+                    </p>
+                  ) : null}
+
+                  {insights.length > 0 ? (
+                    <div className="mt-3 grid gap-2">
+                      {insights.map((insight) => (
+                        <div
+                          key={insight.id}
+                          className={`rounded-xl border-l-4 px-3 py-2 ${
+                            insight.severity === "review"
+                              ? "border-l-[#c2703d] bg-[#fff8f3]"
+                              : "border-l-[#b9cac3] bg-white/80"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="font-semibold text-[#315349]">{insight.title}</p>
+                            {insight.href ? (
+                              <Link href={insight.href} className="btn-ghost px-2.5 py-1 text-[11px]">
+                                Review
+                              </Link>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 text-sm text-[#4f675e]">{insight.detail}</p>
+                          <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a9a93]">
+                            Rule: {insight.window}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <p className="mt-4 text-[11px] leading-5 text-[#8a9a93]">
+                    Monitoring rules: weekly attendance drops ≥ {INSIGHT_ATTENDANCE_DROP_PCT}% per group (min{" "}
+                    {INSIGHT_MIN_CHECKINS_PER_WINDOW} check-ins in the earlier week) • members inactive{" "}
+                    {INSIGHT_MEMBER_INACTIVE_DAYS}+ days after {INSIGHT_MEMBER_BASELINE_MIN}+ attendances in{" "}
+                    {INSIGHT_MEMBER_BASELINE_DAYS} days • event ratings ≤ {INSIGHT_LOW_RATING.toFixed(1)}★ with ≥{" "}
+                    {INSIGHT_MIN_RESPONSES} responses • recurring weak categories • legacy and weekday data checks.
                   </p>
                 </div>
-              ))}
+              </div>
             </div>
           ) : null}
-
-          <p className="mt-3 text-[11px] leading-5 text-[#8a9a93]">
-            Monitoring rules: weekly attendance drops ≥ {INSIGHT_ATTENDANCE_DROP_PCT}% per group (min{" "}
-            {INSIGHT_MIN_CHECKINS_PER_WINDOW} check-ins in the earlier week) • members inactive{" "}
-            {INSIGHT_MEMBER_INACTIVE_DAYS}+ days after {INSIGHT_MEMBER_BASELINE_MIN}+ attendances in{" "}
-            {INSIGHT_MEMBER_BASELINE_DAYS} days • event ratings ≤ {INSIGHT_LOW_RATING.toFixed(1)}★ with ≥{" "}
-            {INSIGHT_MIN_RESPONSES} responses • recurring weak categories • legacy and weekday data checks.
-          </p>
         </section>
       ) : null}
 

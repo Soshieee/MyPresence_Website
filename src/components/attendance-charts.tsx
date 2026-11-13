@@ -180,50 +180,66 @@ export function DonutStatPanel({
 
   return (
     <PanelShell title={title} hasData={hasData} emptyText={emptyText}>
-      <div className="relative mt-1 h-[220px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Tooltip content={<TooltipCard showShare />} />
-            <Legend
-              verticalAlign="bottom"
-              iconType="circle"
-              formatter={(value) => <span className="text-[11px] font-semibold text-[#496359]">{value}</span>}
-            />
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="label"
-              innerRadius="48%"
-              outerRadius="74%"
-              paddingAngle={3}
-              strokeWidth={0}
-            >
-              {data.map((entry) => (
-                <Cell key={entry.label} fill={entry.fill} />
-              ))}
-            </Pie>
-            <text
-              x="50%"
-              y="42%"
-              textAnchor="middle"
-              dominantBaseline="middle"
-              className="fill-[#22322d] font-semibold"
-              style={{ fontSize: 24 }}
-            >
-              {total}
-            </text>
-            <text
-              x="50%"
-              y="52%"
-              textAnchor="middle"
-              dominantBaseline="middle"
-              className="fill-[#5d736a]"
-              style={{ fontSize: 10 }}
-            >
-              {centerLabel}
-            </text>
-          </PieChart>
-        </ResponsiveContainer>
+      <div className="mt-1">
+        {/* Fixed-size chart box + HTML legend below it: the donut's size and
+            center no longer depend on how many legend entries recharts renders,
+            so all four stat panels align on every page. */}
+        <div className="relative h-[180px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Tooltip content={<TooltipCard showShare />} />
+              <Pie
+                data={data}
+                dataKey="value"
+                nameKey="label"
+                cx="50%"
+                cy="50%"
+                innerRadius={54}
+                outerRadius={82}
+                paddingAngle={3}
+                strokeWidth={0}
+              >
+                {data.map((entry) => (
+                  <Cell key={entry.label} fill={entry.fill} />
+                ))}
+              </Pie>
+              <text
+                x="50%"
+                y="46%"
+                textAnchor="middle"
+                dominantBaseline="middle"
+                className="fill-[#22322d] font-semibold"
+                style={{ fontSize: 24 }}
+              >
+                {total}
+              </text>
+              <text
+                x="50%"
+                y="59%"
+                textAnchor="middle"
+                dominantBaseline="middle"
+                className="fill-[#5d736a]"
+                style={{ fontSize: 10 }}
+              >
+                {centerLabel}
+              </text>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        {data.length > 0 ? (
+          <ul className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1">
+            {data.map((item) => (
+              <li key={item.label} className="flex items-center gap-1.5 text-[11px] font-semibold text-[#496359]">
+                <span
+                  aria-hidden
+                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: item.fill }}
+                />
+                {item.label}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </PanelShell>
   );
