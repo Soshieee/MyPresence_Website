@@ -1028,13 +1028,13 @@ export default function EventsManagerPage() {
   }, [loadCalendar, loadEvents, loadHashtags, loadMemberCounts, loadSuggestions]);
 
   useEffect(() => {
-    if (!hasSupabaseEnv) {
-      setHashtagAdminState("denied");
-      return;
-    }
-
     let active = true;
     const checkHashtagAdmin = async () => {
+      if (!hasSupabaseEnv) {
+        if (active) setHashtagAdminState("denied");
+        return;
+      }
+
       const socialAdmin = await supabase.rpc("is_social_admin");
       if (!active) return;
       if (!socialAdmin.error) {
@@ -1159,7 +1159,12 @@ export default function EventsManagerPage() {
   useEffect(() => {
     if (feedbackAdmin !== "allowed") return;
     if (feedbackStatus !== "idle") return;
-    void loadFeedbackData();
+
+    const load = async () => {
+      await loadFeedbackData();
+    };
+
+    void load();
   }, [feedbackAdmin, feedbackStatus, loadFeedbackData]);
 
   const feedbackStatsByEvent = useMemo(() => {

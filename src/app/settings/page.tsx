@@ -69,9 +69,15 @@ export default function SettingsPage() {
   const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
 
   useEffect(() => {
-    const settings = loadAppSettings();
-    setNewcomerClearScanCount(settings.newcomerClearScanCount);
-    setSavedNewcomerClearScanCount(settings.newcomerClearScanCount);
+    // localStorage is read after mount (SSR-safe); the state updates run in an
+    // async continuation rather than synchronously inside the effect body.
+    const load = async () => {
+      const settings = loadAppSettings();
+      setNewcomerClearScanCount(settings.newcomerClearScanCount);
+      setSavedNewcomerClearScanCount(settings.newcomerClearScanCount);
+    };
+
+    void load();
   }, []);
 
   useEffect(() => {
@@ -167,7 +173,12 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!isAdmin) return;
-    void loadInvitations();
+
+    const load = async () => {
+      await loadInvitations();
+    };
+
+    void load();
   }, [isAdmin, loadInvitations]);
 
   const sendInvitation = async () => {

@@ -29,7 +29,7 @@ const hasGraph = (directory) => existsSync(join(directory, "graphify-out", "grap
 const location = [...import.meta.url].reduce((hash, ch) => (Math.imul(hash, 31) + ch.charCodeAt(0)) >>> 0, 7);
 const reminded = (globalThis.__graphifyReminded ??= new Set());
 
-export default {
+const graphifyPlugin = {
   id: `graphify-${location.toString(16)}`,
 
   // OpenCode 2: the command tool is "shell", and one server outlives many
@@ -60,3 +60,5 @@ export default {
     };
   },
 };
+
+export default graphifyPlugin;

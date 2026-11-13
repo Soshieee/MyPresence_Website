@@ -160,13 +160,13 @@ export default function AttendancePage() {
   const [adminState, setAdminState] = useState<"checking" | "allowed" | "denied">("checking");
 
   useEffect(() => {
-    if (!hasSupabaseEnv) {
-      setAdminState("denied");
-      return;
-    }
-
     let active = true;
     const checkAdmin = async () => {
+      if (!hasSupabaseEnv) {
+        if (active) setAdminState("denied");
+        return;
+      }
+
       const { data, error } = await supabase.rpc("is_admin");
       if (!active) return;
       setAdminState(!error && data === true ? "allowed" : "denied");
@@ -253,7 +253,12 @@ export default function AttendancePage() {
   // Stream a downscaled live camera preview to the kiosk (~4 fps). The kiosk
   // never accesses the camera or biometric data — it only shows this stream.
   const kioskMirrorRef = useRef(isMirrored);
-  kioskMirrorRef.current = isMirrored;
+  // Mirror preference is kept outside the render phase: the kiosk frame tick
+  // below is registered once and reads the ref each time it fires, so this
+  // effect keeps the ref current without touching refs during render.
+  useEffect(() => {
+    kioskMirrorRef.current = isMirrored;
+  }, [isMirrored]);
   useEffect(() => {
     if (!hasSupabaseEnv) return;
     let canvas: HTMLCanvasElement | null = null;
@@ -525,12 +530,18 @@ export default function AttendancePage() {
   useEffect(() => {
     if (!isReady) return;
 
-    void loadLogsForDate(selectedDate).catch((err: unknown) => {
-      console.error(err);
-      const errorMessage = err instanceof Error ? err.message : "Unknown error";
-      setStatusType("error");
-      setStatusMessage(`Failed to load attendance for date: ${errorMessage}`);
-    });
+    const load = async () => {
+      try {
+        await loadLogsForDate(selectedDate);
+      } catch (err: unknown) {
+        console.error(err);
+        const errorMessage = err instanceof Error ? err.message : "Unknown error";
+        setStatusType("error");
+        setStatusMessage(`Failed to load attendance for date: ${errorMessage}`);
+      }
+    };
+
+    void load();
   }, [isReady, loadLogsForDate, selectedDate]);
 
   const markAttendance = useCallback(async (studentId: string, fullName: string) => {
@@ -744,11 +755,18 @@ export default function AttendancePage() {
   }, [events, newcomerClearCount, publishKioskScan, selectedContext, selectedDate, selectedEventId, selectedGroup, users]);
 
   useEffect(() => {
-    if (!isReady || users.length === 0) {
-      if (isReady && users.length === 0) {
-        setStatusType("error");
-        setStatusMessage("No registered users found. Register users first.");
-      }
+    if (!isReady) return;
+
+    // Idle/blocked scanner status updates are dispatched from an async
+    // continuation instead of synchronously inside the effect body, so the
+    // status panel render is not cascaded directly off the effect run.
+    const setStatusAsync = async (type: ScannerStatusType, message: string) => {
+      setStatusType(type);
+      setStatusMessage(message);
+    };
+
+    if (users.length === 0) {
+      void setStatusAsync("error", "No registered users found. Register users first.");
       return;
     }
 
@@ -759,8 +777,8 @@ export default function AttendancePage() {
       : null;
 
     if (!selectedContext || !groupForScan) {
-      setStatusType("info");
-      setStatusMessage(
+      void setStatusAsync(
+        "info",
         selectedContext === "Sunday Service"
           ? "Select First Service or Second Service before scanning."
           : "Select an attendance type before scanning."
@@ -772,8 +790,7 @@ export default function AttendancePage() {
     const activeGroup: string = groupForScan;
 
     if (knownDescriptors.length === 0) {
-      setStatusType("error");
-      setStatusMessage("No valid descriptors found. Re-register users.");
+      void setStatusAsync("error", "No valid descriptors found. Re-register users.");
       return;
     }
 

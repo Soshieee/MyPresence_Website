@@ -474,8 +474,13 @@ export default function AttendanceRecordsPage() {
   useEffect(() => {
     if (recordsView !== "lifegroups") return;
     if (lifegroupLoaded) return;
-    setLifegroupLoaded(true);
-    void fetchLifegroupData();
+
+    const load = async () => {
+      setLifegroupLoaded(true);
+      await fetchLifegroupData();
+    };
+
+    void load();
   }, [fetchLifegroupData, lifegroupLoaded, recordsView]);
 
   const formatDateMMDDYY = useCallback((value: string) => {
@@ -610,7 +615,11 @@ export default function AttendanceRecordsPage() {
   }, [range.from, range.to]);
 
   useEffect(() => {
-    void fetchLogs();
+    const load = async () => {
+      await fetchLogs();
+    };
+
+    void load();
   }, [fetchLogs]);
 
   // Full attendance history (bounded by MIN_ANALYTICS_DATE) used by the P2
@@ -653,7 +662,12 @@ export default function AttendanceRecordsPage() {
   useEffect(() => {
     if (attendancePanel !== "analytics") return;
     if (timelineStatus !== "idle") return;
-    void fetchTimelineLogs();
+
+    const load = async () => {
+      await fetchTimelineLogs();
+    };
+
+    void load();
   }, [attendancePanel, fetchTimelineLogs, timelineStatus]);
 
   const userNetworkMap = useMemo(() => buildStudentNetworkMap(users), [users]);
@@ -731,16 +745,19 @@ export default function AttendanceRecordsPage() {
     });
   }, [attendanceTypeFilter, eventLookup, linkedEventOptions, logs]);
 
-  useEffect(() => {
-    if (selectedLinkedEventId && !availableLinkedEventOptions.some((event) => event.id === selectedLinkedEventId)) {
-      setSelectedLinkedEventId(null);
-    }
-  }, [availableLinkedEventOptions, selectedLinkedEventId]);
+  // The selected event only filters records while the current attendance-type
+  // filter still offers it; derive the effective selection during render
+  // instead of clearing it in an effect.
+  const activeLinkedEventId =
+    selectedLinkedEventId &&
+    availableLinkedEventOptions.some((event) => event.id === selectedLinkedEventId)
+      ? selectedLinkedEventId
+      : null;
 
   const selectedLinkedEventLabel = useMemo(() => {
-    if (!selectedLinkedEventId) return null;
-    return linkedEventLabelById.get(selectedLinkedEventId) ?? `Deleted Event (${selectedLinkedEventId.slice(0, 8)})`;
-  }, [linkedEventLabelById, selectedLinkedEventId]);
+    if (!activeLinkedEventId) return null;
+    return linkedEventLabelById.get(activeLinkedEventId) ?? `Deleted Event (${activeLinkedEventId.slice(0, 8)})`;
+  }, [activeLinkedEventId, linkedEventLabelById]);
 
   const selectedNetworkSet = useMemo(() => new Set(selectedNetworks), [selectedNetworks]);
   const normalizedSearch = useMemo(() => searchTerm.trim().toLowerCase(), [searchTerm]);
@@ -765,8 +782,8 @@ export default function AttendanceRecordsPage() {
         normalizeAttendanceType(log.attendance_context, log.attendance_group) === attendanceTypeFilter;
 
       const matchesLinkedEvent =
-        !selectedLinkedEventId ||
-        log.event_id === selectedLinkedEventId;
+        !activeLinkedEventId ||
+        log.event_id === activeLinkedEventId;
 
       const matchesSearch =
         normalizedSearch.length === 0 ||
@@ -775,17 +792,31 @@ export default function AttendanceRecordsPage() {
 
       return matchesNetwork && matchesAttendanceType && matchesLinkedEvent && matchesSearch;
     });
-  }, [attendanceTypeFilter, logs, normalizedSearch, selectedLinkedEventId, selectedNetworkSet, userNetworkMap]);
+  }, [activeLinkedEventId, attendanceTypeFilter, logs, normalizedSearch, selectedNetworkSet, userNetworkMap]);
 
   const hasNoRecordsForSelectedLinkedEvent =
-    Boolean(selectedLinkedEventId) &&
+    Boolean(activeLinkedEventId) &&
     filteredLogs.length === 0;
 
-  useEffect(() => {
+  // Reset pagination whenever the active filter set changes. This uses the
+  // render-phase state adjustment pattern (guard + previous-value snapshot)
+  // rather than a setState-in-effect reset.
+  const filterIdentity = [
+    attendanceTypeFilter,
+    normalizedSearch,
+    range.from,
+    range.to,
+    activeLinkedEventId ?? "",
+    [...selectedNetworkSet].sort().join("|")
+  ].join("\u0000");
+
+  const [prevFilterIdentity, setPrevFilterIdentity] = useState(filterIdentity);
+  if (prevFilterIdentity !== filterIdentity) {
+    setPrevFilterIdentity(filterIdentity);
     setPage(1);
     setMemberSummaryPage(1);
     setOccasionPage(1);
-  }, [attendanceTypeFilter, normalizedSearch, range.from, range.to, selectedLinkedEventId, selectedNetworkSet]);
+  }
 
   const totalPages = Math.max(1, Math.ceil(filteredLogs.length / RECORDS_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -1154,10 +1185,10 @@ export default function AttendanceRecordsPage() {
       const matchesAttendanceType =
         attendanceTypeFilter === "all" ||
         normalizeAttendanceType(log.attendance_context, log.attendance_group) === attendanceTypeFilter;
-      const matchesLinkedEvent = !selectedLinkedEventId || log.event_id === selectedLinkedEventId;
+      const matchesLinkedEvent = !activeLinkedEventId || log.event_id === activeLinkedEventId;
       return matchesNetwork && matchesAttendanceType && matchesLinkedEvent;
     });
-  }, [attendanceTypeFilter, selectedLinkedEventId, selectedNetworkSet, timelineLogs, userNetworkMap]);
+  }, [activeLinkedEventId, attendanceTypeFilter, selectedNetworkSet, timelineLogs, userNetworkMap]);
 
   const toggleCompareEvent = useCallback((eventId: string) => {
     setCompareEventIds((previous) => {
@@ -2562,7 +2593,7 @@ export default function AttendanceRecordsPage() {
               <select
                 id="linked-event-filter"
                 className="field-input"
-                value={selectedLinkedEventId ?? ""}
+                value={activeLinkedEventId ?? ""}
                 onChange={(event) => setSelectedLinkedEventId(event.target.value || null)}
                 disabled={availableLinkedEventOptions.length === 0}
               >
@@ -2574,7 +2605,7 @@ export default function AttendanceRecordsPage() {
                 ))}
               </select>
             </div>
-            {selectedLinkedEventId ? (
+            {activeLinkedEventId ? (
               <button type="button" onClick={() => setSelectedLinkedEventId(null)} className="btn-ghost">
                 Clear Event
               </button>
@@ -2877,7 +2908,7 @@ export default function AttendanceRecordsPage() {
       <section className="analytics-panel reveal">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Analytics Overview</h2>
-          {selectedLinkedEventId ? (
+          {activeLinkedEventId ? (
             <p className="text-sm text-[#5d736a]">
               Showing attendance for{" "}
               <span className="font-semibold text-[#315349]">
