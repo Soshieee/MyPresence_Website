@@ -11,7 +11,13 @@ import { useEffect, useMemo, useState } from "react";
 import { DonutStatPanel } from "@/components/attendance-charts";
 import { AGE_BUCKETS, GENDER_COLORS } from "@/components/analytics/demographics";
 import { EventsTimelineChart, type EventChartEventMarker, type EventChartPoint } from "@/components/analytics/events-timeline-chart";
-import { FEEDBACK_CATEGORIES, type EventFeedbackSummary } from "@/components/event-feedback";
+import {
+  FEEDBACK_CATEGORIES,
+  feedbackCategoryAverage,
+  feedbackCategoryResponses,
+  summaryNumber,
+  type EventFeedbackSummary
+} from "@/components/event-feedback";
 import { GROUP_COLORS } from "@/lib/analytics-colors";
 import { normalizeAttendanceType, type AttendanceType } from "@/lib/attendance";
 import {
@@ -54,21 +60,6 @@ function monthKeyLabel(key: string): string {
   const [year, month] = key.split("-").map(Number);
   if (!year || !month) return key;
   return new Date(year, month - 1, 1).toLocaleDateString(undefined, { month: "short" });
-}
-
-function feedbackCategoryValue(summary: EventFeedbackSummary | undefined, key: string): number | null {
-  if (!summary) return null;
-  const record = summary as unknown as Record<string, unknown>;
-  const averageKey = `avg_${key}`;
-  const value = record[averageKey];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function feedbackCategoryResponses(summary: EventFeedbackSummary | undefined, key: string): number {
-  if (!summary) return 0;
-  const record = summary as unknown as Record<string, unknown>;
-  const value = record[key.replace("_rating", "_responses")];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export function shouldShowSundayAnalytics(
@@ -164,11 +155,15 @@ export function EventsAnalyticsModule() {
 
   const filteredLogs = useMemo(() => logs.filter((log) => matchesTypeFilter(log, typeFilter)), [logs, typeFilter]);
 
+  // "Last year has data" for the scope on screen: the whole previous year in
+  // the year view, the same month one year back in the month view — so the
+  // "(no data yet)" legend hint stays truthful in both.
   const hasPrevYearData = useMemo(() => {
     if (!effectiveYear) return false;
     const prev = String(Number(effectiveYear) - 1);
-    return filteredLogs.some((log) => log.attended_date.startsWith(prev));
-  }, [filteredLogs, effectiveYear]);
+    const prefix = month === "all" ? prev : `${prev}-${month}`;
+    return filteredLogs.some((log) => log.attended_date.startsWith(prefix));
+  }, [filteredLogs, effectiveYear, month]);
 
   const chartBuild = useMemo(() => {
     const empty = { points: [] as EventChartPoint[], granularity: "year" as const };
@@ -571,6 +566,10 @@ export function EventsAnalyticsModule() {
               <div className="mt-2 grid gap-2">
                 {details.events.map((event) => {
                   const summary = feedback.get(event.id);
+                  // count() columns arrive from PostgREST as strings (int8) —
+                  // read them tolerantly instead of assuming numbers.
+                  const totalResponses = summaryNumber(summary?.total_responses) ?? 0;
+                  const overallAvg = summaryNumber(summary?.avg_overall_rating);
                   return (
                     <div key={event.id} className="rounded-xl bg-white/85 px-3 py-2">
                       <p className="font-semibold text-[#315349]">
@@ -584,42 +583,50 @@ export function EventsAnalyticsModule() {
                         <p className="mt-1 text-xs leading-relaxed text-[#4f675e]">{event.details}</p>
                       ) : null}
 
-                      {summary && (summary.total_responses ?? 0) > 0 ? (
+                      {summary && totalResponses > 0 ? (
                         <div className="mt-2 rounded-xl border border-[#e2e8e5] bg-white px-3 py-2">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#527064]">
                               Event feedback
                             </p>
                             <p className="text-xs text-[#4f675e]">
-                              {summary.total_responses} {summary.total_responses === 1 ? "response" : "responses"}
-                              {typeof summary.avg_overall_rating === "number" ? (
+                              {totalResponses} {totalResponses === 1 ? "response" : "responses"}
+                              {overallAvg !== null ? (
                                 <span className="ml-2 font-semibold text-[#8a5a17]">
-                                  ★ {summary.avg_overall_rating.toFixed(1)}
+                                  ★ {overallAvg.toFixed(1)}
                                 </span>
                               ) : null}
                             </p>
                           </div>
                           <div className="mt-2 grid gap-1.5">
                             {FEEDBACK_CATEGORIES.map((category) => {
-                              const value = feedbackCategoryValue(summary, category.key);
+                              const value = feedbackCategoryAverage(summary, category.key);
+                              // null = the count column is unavailable in this
+                              // deployment's summary view — show the average
+                              // without a count instead of a false zero.
                               const responses = feedbackCategoryResponses(summary, category.key);
-                              const hasRating = responses > 0 && value !== null;
+                              const countLabel =
+                                responses === null
+                                  ? ""
+                                  : ` • ${responses} ${responses === 1 ? "response" : "responses"}`;
                               return (
                                 <div key={category.key} className="grid gap-1 text-[11px]">
                                   <div className="flex items-center justify-between gap-2">
                                     <span className="font-semibold text-[#496359]">{category.label}</span>
                                     <span className="text-[#315349]">
-                                      {hasRating ? value.toFixed(1) : "0.0"} / 5 • {responses}{" "}
-                                      {responses === 1 ? "response" : "responses"}
+                                      {value === null ? "0.0 / 5" : `${value.toFixed(1)} / 5`}
+                                      {value !== null ? countLabel : ""}
                                     </span>
                                   </div>
                                   <div className="h-2 overflow-hidden rounded-full bg-[#e8f0ec]">
                                     <div
                                       className="h-full rounded-full bg-[#d9a441]"
-                                      style={{ width: `${hasRating ? Math.min(Math.max(value, 0) / 5, 1) * 100 : 0}%` }}
+                                      style={{
+                                        width: `${value === null ? 0 : Math.min(Math.max(value, 0) / 5, 1) * 100}%`
+                                      }}
                                     />
                                   </div>
-                                  {responses === 0 ? <span className="text-[#7c918a]">No data yet</span> : null}
+                                  {value === null ? <span className="text-[#7c918a]">No data yet</span> : null}
                                 </div>
                               );
                             })}

@@ -72,6 +72,51 @@ export type EventFeedbackSummary = {
   speaker_responses?: number | null;
 };
 
+// ---------------------------------------------------------------------------
+// Tolerant summary readers
+// ---------------------------------------------------------------------------
+
+/**
+ * PostgREST serializes `count()` aggregates (int8) as JSON strings to avoid
+ * precision loss, while avg() (numeric) arrives as a number — and some
+ * deployments return numerics as strings too. Read both shapes defensively;
+ * null means "this value is not usable" (missing column, N/A, unparsable).
+ */
+export function summaryNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/** Average for one feedback factor ("food_rating" -> view column avg_food_rating). */
+export function feedbackCategoryAverage(
+  summary: EventFeedbackSummary | undefined | null,
+  key: string
+): number | null {
+  if (!summary) return null;
+  const record = summary as unknown as Record<string, unknown>;
+  return summaryNumber(record[`avg_${key}`]);
+}
+
+/**
+ * Response count for one feedback factor ("food_rating" -> food_responses).
+ * null means the count is unknown (the summary view predates the per-category
+ * count columns); a number — including 0 — is authoritative.
+ */
+export function feedbackCategoryResponses(
+  summary: EventFeedbackSummary | undefined | null,
+  key: string
+): number | null {
+  if (!summary) return null;
+  const record = summary as unknown as Record<string, unknown>;
+  return summaryNumber(record[key.replace("_rating", "_responses")]);
+}
+
 // Evidence thresholds: flags require enough responses before they mean anything.
 export const FEEDBACK_MIN_RESPONSES = 5;
 export const FEEDBACK_OUTLIER_GAP = 0.75;
@@ -111,25 +156,27 @@ export function computeFeedbackStats(
 
   // Category averages and response counts come from raw rows when readable;
   // when they are not, the summary view's per-category values are used. Both
-  // paths exclude N/A (NULL) ratings by definition.
+  // paths exclude N/A (NULL) ratings by definition. Summary values are read
+  // tolerantly: count() columns arrive as strings via PostgREST (int8), and
+  // an average can exist even when its count column is missing (older view).
   const summaryAvgByKey: Partial<Record<FeedbackCategoryKey, number | null>> = summary
     ? {
-        food_rating: summary.avg_food_rating,
-        venue_rating: summary.avg_venue_rating,
-        music_rating: summary.avg_music_rating,
-        program_rating: summary.avg_program_rating,
-        staff_rating: summary.avg_staff_rating,
-        speaker_rating: summary.avg_speaker_rating
+        food_rating: feedbackCategoryAverage(summary, "food_rating"),
+        venue_rating: feedbackCategoryAverage(summary, "venue_rating"),
+        music_rating: feedbackCategoryAverage(summary, "music_rating"),
+        program_rating: feedbackCategoryAverage(summary, "program_rating"),
+        staff_rating: feedbackCategoryAverage(summary, "staff_rating"),
+        speaker_rating: feedbackCategoryAverage(summary, "speaker_rating")
       }
     : {};
   const summaryCountByKey: Partial<Record<FeedbackCategoryKey, number | null>> = summary
     ? {
-        food_rating: summary.food_responses,
-        venue_rating: summary.venue_responses,
-        music_rating: summary.music_responses,
-        program_rating: summary.program_responses,
-        staff_rating: summary.staff_responses,
-        speaker_rating: summary.speaker_responses
+        food_rating: feedbackCategoryResponses(summary, "food_rating"),
+        venue_rating: feedbackCategoryResponses(summary, "venue_rating"),
+        music_rating: feedbackCategoryResponses(summary, "music_rating"),
+        program_rating: feedbackCategoryResponses(summary, "program_rating"),
+        staff_rating: feedbackCategoryResponses(summary, "staff_rating"),
+        speaker_rating: feedbackCategoryResponses(summary, "speaker_rating")
       }
     : {};
 
@@ -141,21 +188,19 @@ export function computeFeedbackStats(
     const avg =
       values.length > 0
         ? Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 100) / 100
-        : count > 0
-          ? (summaryAvgByKey[category.key] ?? null)
-          : null;
+        : (summaryAvgByKey[category.key] ?? null);
     return { key: category.key, label: category.label, avg, count };
   });
 
   const overallAvg =
     total > 0
       ? Math.round((rows.reduce((sum, row) => sum + row.overall_rating, 0) / total) * 100) / 100
-      : (summary?.avg_overall_rating ?? null);
+      : summaryNumber(summary?.avg_overall_rating);
 
   const sortedByDate = [...rows].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
 
   return {
-    total: total || (summary?.total_responses ?? 0),
+    total: total || (summaryNumber(summary?.total_responses) ?? 0),
     overallAvg,
     distribution,
     categories,

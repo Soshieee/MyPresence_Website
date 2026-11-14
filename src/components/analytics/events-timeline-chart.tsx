@@ -60,6 +60,8 @@ function TimelineTooltip({
   if (!active || !payload || payload.length === 0) return null;
   const point = pointByLabel?.get(String(label));
   if (!point) return null;
+  const pointYear = point.key.slice(0, 4);
+  const prevYearLabel = /^\d{4}$/.test(pointYear) ? ` (${Number(pointYear) - 1})` : "";
 
   return (
     <div className="max-w-[280px] rounded-xl border border-[#c3d0cb] bg-white/95 px-3 py-2 text-xs shadow-[0_10px_24px_rgba(56,91,79,0.18)]">
@@ -68,9 +70,14 @@ function TimelineTooltip({
         Attendance: <span className="font-semibold text-[#315349]">{point.value}</span>
         {point.value === 1 ? " attendee" : " attendees"}
       </p>
-      {showPrevYear && point.prevValue !== null ? (
+      {showPrevYear ? (
         <p className="text-[#64748b]">
-          Same period last year: <span className="font-semibold">{point.prevValue}</span>
+          Same period{prevYearLabel}:{" "}
+          {point.prevValue === null ? (
+            <span className="text-[#7c918a]">no data</span>
+          ) : (
+            <span className="font-semibold">{point.prevValue}</span>
+          )}
         </p>
       ) : null}
       {point.events.length > 0 ? (
@@ -111,6 +118,10 @@ export function EventsTimelineChart({
   const hasData = points.some((point) => point.value > 0 || point.events.length > 0);
   const pointByLabel = new Map(points.map((point) => [point.label, point]));
   const showPrevLine = showPrevYear && hasPrevYearData;
+  // Point keys are "YYYY-MM" (year view) or "YYYY-MM-DD" (month view), so the
+  // compared years can be named in the legend and tooltip.
+  const currentYear = /^\d{4}/.test(points[0]?.key ?? "") ? points[0].key.slice(0, 4) : null;
+  const prevYear = currentYear ? String(Number(currentYear) - 1) : null;
 
   const renderMainDot = (props: { cx?: number; cy?: number; payload?: EventChartPoint }) => {
     const { cx, cy, payload } = props;
@@ -122,6 +133,17 @@ export function EventsTimelineChart({
       return <circle cx={cx} cy={cy} r={5.5} fill={EVENT_DOT_COLOR} stroke={EVENT_DOT_STROKE} strokeWidth={1.5} />;
     }
     return <circle cx={cx} cy={cy} r={3.5} fill={MAIN_COLOR} strokeWidth={0} />;
+  };
+
+  // The previous-year line renders as small hollow markers so isolated points
+  // stay visible: in the month view, Sundays and meetings drift across the
+  // calendar, so last year's values rarely line up on consecutive days — with
+  // dot={false} recharts draws nothing for a lone point and the overlay
+  // appears broken even when the data is there.
+  const renderPrevDot = (props: { cx?: number; cy?: number }) => {
+    const { cx, cy } = props;
+    if (cx === undefined || cy === undefined) return <g />;
+    return <circle cx={cx} cy={cy} r={3} fill="#ffffff" stroke={PREV_COLOR} strokeWidth={1.5} />;
   };
 
   return (
@@ -162,7 +184,7 @@ export function EventsTimelineChart({
                     stroke={PREV_COLOR}
                     strokeDasharray="6 4"
                     strokeWidth={2}
-                    dot={false}
+                    dot={renderPrevDot}
                     connectNulls={false}
                     isAnimationActive={false}
                   />
@@ -184,11 +206,13 @@ export function EventsTimelineChart({
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#4f675e]">
             <span className="inline-flex items-center gap-1.5">
               <span className="inline-block h-0.5 w-5 rounded-full bg-[#0f766e]" /> Attendance
+              {currentYear ? ` ${currentYear}` : ""}
             </span>
             {showPrevYear ? (
               <span className="inline-flex items-center gap-1.5">
                 <span className="inline-block h-0.5 w-5 rounded-full border-t-2 border-dashed border-[#94a3b8]" />
-                Same period last year {hasPrevYearData ? "" : "(no data yet)"}
+                Same period last year
+                {prevYear ? ` ${prevYear}` : ""} {hasPrevYearData ? "" : "(no data yet)"}
               </span>
             ) : null}
             <span className="inline-flex items-center gap-1.5">
