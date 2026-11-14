@@ -30,6 +30,7 @@ import {
   type AnalyticsEvent,
   type AnalyticsUser
 } from "@/lib/analytics-data";
+import { toLocalDateInput } from "@/lib/date";
 import { getNetworkFromProfile, NETWORK_LABELS, type NetworkKey } from "@/lib/networks";
 import { hasSupabaseEnv } from "@/lib/supabase";
 import type { AttendanceLog } from "@/types";
@@ -155,16 +156,6 @@ export function EventsAnalyticsModule() {
 
   const filteredLogs = useMemo(() => logs.filter((log) => matchesTypeFilter(log, typeFilter)), [logs, typeFilter]);
 
-  // "Last year has data" for the scope on screen: the whole previous year in
-  // the year view, the same month one year back in the month view — so the
-  // "(no data yet)" legend hint stays truthful in both.
-  const hasPrevYearData = useMemo(() => {
-    if (!effectiveYear) return false;
-    const prev = String(Number(effectiveYear) - 1);
-    const prefix = month === "all" ? prev : `${prev}-${month}`;
-    return filteredLogs.some((log) => log.attended_date.startsWith(prefix));
-  }, [filteredLogs, effectiveYear, month]);
-
   const chartBuild = useMemo(() => {
     const empty = { points: [] as EventChartPoint[], granularity: "year" as const };
     if (status !== "ready" || !effectiveYear) return empty;
@@ -207,7 +198,6 @@ export function EventsAnalyticsModule() {
     }
 
     const monthPrefix = `${effectiveYear}-${month}`;
-    const prevYearPrefix = `${Number(effectiveYear) - 1}-${month}`;
     const days = new Set<string>();
     for (const log of filteredLogs) {
       if (log.attended_date.startsWith(monthPrefix)) days.add(log.attended_date);
@@ -220,7 +210,13 @@ export function EventsAnalyticsModule() {
       .sort()
       .map((date) => {
         const day = date.slice(8, 10);
-        const prevDate = `${prevYearPrefix}-${day}`;
+        // Compare with the same weekday one year earlier, not the same day
+        // number: attendance lives on Sundays, and the weekday drifts against
+        // the calendar. Exactly 52 weeks back (364 days) lines up Sunday with
+        // Sunday — e.g. Sun Nov 8, 2026 compares with Sun Nov 9, 2025.
+        const shifted = new Date(`${date}T00:00:00`);
+        shifted.setDate(shifted.getDate() - 364);
+        const prevDate = toLocalDateInput(shifted);
         const set = attendeesInRange(date);
         const prevSet = attendeesInRange(prevDate);
         return {
@@ -237,6 +233,15 @@ export function EventsAnalyticsModule() {
 
     return { points, granularity: "month" as const };
   }, [events, filteredLogs, month, selectedDate, status, typeFilter, effectiveYear]);
+
+  // "Last year has data" for whatever is on screen, read from the chart points
+  // themselves: true when at least one point has a previous-year value. This
+  // keeps the "(no data yet)" legend hint exact even though the 364-day
+  // weekday alignment can move the compared days across a month boundary.
+  const hasPrevYearData = useMemo(
+    () => chartBuild.points.some((point) => point.prevValue !== null),
+    [chartBuild]
+  );
 
   const focusedLogs = useMemo(() => {
     if (selectedDate) return filteredLogs.filter((log) => log.attended_date === selectedDate);

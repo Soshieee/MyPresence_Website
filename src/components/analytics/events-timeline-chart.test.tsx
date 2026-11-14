@@ -109,6 +109,35 @@ describe("EventsTimelineChart — compare with last year", () => {
     expect(container.querySelectorAll(`circle[stroke="${PREV_COLOR}"]`).length).toBe(1);
   });
 
+  it("connects the dashed line across gaps (Sunday to Sunday) in the month view", () => {
+    // Weekday alignment (364-day shift) puts last year's values 7 days apart
+    // with nulls between — the dashed line must run through them, not break.
+    const monthPoints: EventChartPoint[] = [
+      point("2025-10-05", "5", 114, 108),
+      point("2025-10-08", "8", 46, null),
+      point("2025-10-12", "12", 108, 116),
+      point("2025-10-19", "19", 132, 112),
+      point("2025-10-26", "26", 119, 126)
+    ];
+
+    const { container } = render(
+      <EventsTimelineChart
+        title="Church attendance — October 2025"
+        granularity="month"
+        points={monthPoints}
+        showPrevYear
+        hasPrevYearData
+        onSelectPoint={() => {}}
+      />
+    );
+
+    const prevPaths = container.querySelectorAll(`path[stroke="${PREV_COLOR}"]`);
+    expect(prevPaths.length).toBeGreaterThanOrEqual(1);
+    // The single connected path carries the dash pattern; one marker per value.
+    expect(prevPaths[0].getAttribute("stroke-dasharray")).toBeTruthy();
+    expect(container.querySelectorAll(`circle[stroke="${PREV_COLOR}"]`).length).toBe(4);
+  });
+
   it("returns to the current-year-only view when toggled off", () => {
     const { container } = render(
       <EventsTimelineChart

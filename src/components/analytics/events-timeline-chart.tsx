@@ -135,11 +135,11 @@ export function EventsTimelineChart({
     return <circle cx={cx} cy={cy} r={3.5} fill={MAIN_COLOR} strokeWidth={0} />;
   };
 
-  // The previous-year line renders as small hollow markers so isolated points
-  // stay visible: in the month view, Sundays and meetings drift across the
-  // calendar, so last year's values rarely line up on consecutive days — with
-  // dot={false} recharts draws nothing for a lone point and the overlay
-  // appears broken even when the data is there.
+  // The previous-year line draws across gaps (connectNulls) so the year-over-
+  // year trajectory reads as one dashed line — in the month view the values
+  // sit Sunday to Sunday with nulls between — and each value keeps a small
+  // hollow marker so isolated points stay visible even without neighbours
+  // (with dot={false} recharts draws nothing for a lone point).
   const renderPrevDot = (props: { cx?: number; cy?: number }) => {
     const { cx, cy } = props;
     if (cx === undefined || cy === undefined) return <g />;
@@ -185,7 +185,7 @@ export function EventsTimelineChart({
                     strokeDasharray="6 4"
                     strokeWidth={2}
                     dot={renderPrevDot}
-                    connectNulls={false}
+                    connectNulls
                     isAnimationActive={false}
                   />
                 ) : null}
