@@ -48,12 +48,14 @@ function TimelineTooltip({
   active,
   payload,
   label,
-  pointByLabel
+  pointByLabel,
+  showPrevYear
 }: {
   active?: boolean;
   payload?: TooltipPayloadItem[];
   label?: string | number;
   pointByLabel?: Map<string, EventChartPoint>;
+  showPrevYear: boolean;
 }) {
   if (!active || !payload || payload.length === 0) return null;
   const point = pointByLabel?.get(String(label));
@@ -66,7 +68,7 @@ function TimelineTooltip({
         Attendance: <span className="font-semibold text-[#315349]">{point.value}</span>
         {point.value === 1 ? " attendee" : " attendees"}
       </p>
-      {point.prevValue !== null ? (
+      {showPrevYear && point.prevValue !== null ? (
         <p className="text-[#64748b]">
           Same period last year: <span className="font-semibold">{point.prevValue}</span>
         </p>
@@ -99,7 +101,7 @@ export function EventsTimelineChart({
   onSelectPoint
 }: {
   title: string;
-  note: string;
+  note?: string;
   granularity: "year" | "month";
   points: EventChartPoint[];
   showPrevYear: boolean;
@@ -126,7 +128,7 @@ export function EventsTimelineChart({
     <section className="analytics-panel">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="font-[var(--font-heading)] text-lg text-[#24362f]">{title}</h3>
-        <p className="text-[11px] text-[#5d736a]">{note}</p>
+        {note ? <p className="text-[11px] text-[#5d736a]">{note}</p> : null}
       </div>
 
       {!hasData ? (
@@ -149,7 +151,7 @@ export function EventsTimelineChart({
                 <XAxis dataKey="label" tick={AXIS_TICK} tickMargin={8} interval="preserveStartEnd" />
                 <YAxis allowDecimals={false} tick={AXIS_TICK} />
                 <Tooltip
-                  content={<TimelineTooltip pointByLabel={pointByLabel} />}
+                  content={<TimelineTooltip pointByLabel={pointByLabel} showPrevYear={showPrevYear} />}
                   cursor={{ stroke: "#98b6aa", strokeWidth: 1 }}
                 />
                 {showPrevLine ? (

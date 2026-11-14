@@ -1185,10 +1185,6 @@ export default function AttendancePage() {
 
           <div className="card space-y-2">
             <h2 className="font-[var(--font-heading)] text-lg text-[#23332d]">Kiosk Display</h2>
-            <p className="text-xs text-[#5e766c]">
-              Streams the live camera preview and scanner status to the public display, plus scan confirmations —
-              first names only, never IDs or records.
-            </p>
             <button
               type="button"
               className="btn-primary w-full text-xs"
@@ -1198,9 +1194,6 @@ export default function AttendancePage() {
             >
               Open Kiosk Display
             </button>
-            <p className="text-[11px] text-[#71847c]">
-              On the kiosk screen, press Go Fullscreen and keep the display open. Exit anytime via Exit kiosk.
-            </p>
           </div>
         </aside>
       </div>

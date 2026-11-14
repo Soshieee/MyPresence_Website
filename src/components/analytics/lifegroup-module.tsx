@@ -572,7 +572,6 @@ export function LifegroupAnalyticsModule() {
             value={effectiveMemberId}
             onChange={(event) => setSelectedMemberId(event.target.value)}
             disabled={selectedGroupId === "all" || memberOptions.length === 0}
-            aria-describedby={selectedGroupId === "all" ? "lifegroup-member-hint" : undefined}
           >
             <option value="all">All members</option>
             {selectedGroupId !== "all"
@@ -581,11 +580,6 @@ export function LifegroupAnalyticsModule() {
                 ))
               : null}
           </select>
-          {selectedGroupId === "all" ? (
-            <p id="lifegroup-member-hint" className="mt-1 text-[11px] text-[#8a9a93]">
-              Pick a lifegroup to choose a member.
-            </p>
-          ) : null}
         </div>
       </section>
 
@@ -763,11 +757,7 @@ export function LifegroupAnalyticsModule() {
             </section>
           ) : null}
         </>
-      ) : (
-        <p className="text-[11px] text-[#7c918a]">
-          Pick a specific lifegroup to compare its members side by side (member ranking and attended activities).
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }

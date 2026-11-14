@@ -59,8 +59,23 @@ function monthKeyLabel(key: string): string {
 function feedbackCategoryValue(summary: EventFeedbackSummary | undefined, key: string): number | null {
   if (!summary) return null;
   const record = summary as unknown as Record<string, unknown>;
-  const value = record[key];
+  const averageKey = `avg_${key}`;
+  const value = record[averageKey];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function feedbackCategoryResponses(summary: EventFeedbackSummary | undefined, key: string): number {
+  if (!summary) return 0;
+  const record = summary as unknown as Record<string, unknown>;
+  const value = record[key.replace("_rating", "_responses")];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+export function shouldShowSundayAnalytics(
+  typeFilter: TypeFilter,
+  events: Array<Pick<AnalyticsEvent, "event_type">>
+): boolean {
+  return typeFilter === "sunday" && events.every((event) => event.event_type === "Sunday Service");
 }
 
 export function EventsAnalyticsModule() {
@@ -346,7 +361,7 @@ export function EventsAnalyticsModule() {
         people: entry.people.size
       })),
       sunday:
-        sundayLogs.length > 0
+        sundayLogs.length > 0 && shouldShowSundayAnalytics(typeFilter, dayEvents)
           ? { overall: sundayPeople.size, firstService, secondService }
           : null,
       events: dayEvents
@@ -457,11 +472,7 @@ export function EventsAnalyticsModule() {
             ? `Church attendance — ${effectiveYear}`
             : `Church attendance — ${selectedMonthLabel}`
         }
-        note={
-          month === "all"
-            ? "Whole-year view: spot the peak months. Pick a month for day-level details."
-            : "Day-level view: click any point to see the event, feedback and Sunday service breakdown."
-        }
+        note={month === "all" ? "Whole-year view: spot the peak months. Pick a month for day-level details." : undefined}
         granularity={chartBuild.granularity}
         points={chartBuild.points}
         showPrevYear={comparePrevYear}
@@ -591,18 +602,24 @@ export function EventsAnalyticsModule() {
                           <div className="mt-2 grid gap-1.5">
                             {FEEDBACK_CATEGORIES.map((category) => {
                               const value = feedbackCategoryValue(summary, category.key);
+                              const responses = feedbackCategoryResponses(summary, category.key);
+                              const hasRating = responses > 0 && value !== null;
                               return (
-                                <div key={category.key} className="flex items-center gap-2 text-[11px]">
-                                  <span className="w-16 shrink-0 font-semibold text-[#496359]">{category.label}</span>
-                                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#e8f0ec]">
+                                <div key={category.key} className="grid gap-1 text-[11px]">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-semibold text-[#496359]">{category.label}</span>
+                                    <span className="text-[#315349]">
+                                      {hasRating ? value.toFixed(1) : "0.0"} / 5 • {responses}{" "}
+                                      {responses === 1 ? "response" : "responses"}
+                                    </span>
+                                  </div>
+                                  <div className="h-2 overflow-hidden rounded-full bg-[#e8f0ec]">
                                     <div
                                       className="h-full rounded-full bg-[#d9a441]"
-                                      style={{ width: `${value === null ? 0 : Math.min(value / 5, 1) * 100}%` }}
+                                      style={{ width: `${hasRating ? Math.min(Math.max(value, 0) / 5, 1) * 100 : 0}%` }}
                                     />
                                   </div>
-                                  <span className="w-8 text-right text-[#315349]">
-                                    {value === null ? "—" : value.toFixed(1)}
-                                  </span>
+                                  {responses === 0 ? <span className="text-[#7c918a]">No data yet</span> : null}
                                 </div>
                               );
                             })}

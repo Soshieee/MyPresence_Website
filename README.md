@@ -27,3 +27,5 @@ The website portion for our app called MyPresence: A Mobile Event Management and
 Run `supabase/schema.sql` and the required migration files in the `supabase/`
 folder using the Supabase SQL Editor. Website account registration also requires
 the server-only `SUPABASE_SERVICE_ROLE_KEY`; never expose it in frontend code.
+
+Good luck to us. Jared, Mike, Lans..

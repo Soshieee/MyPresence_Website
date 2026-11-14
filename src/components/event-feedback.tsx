@@ -260,7 +260,14 @@ export function FeedbackCategoryTable({ stats }: { stats: FeedbackStats }) {
           <tr key={category.key} className="border-b border-[#edf2ef] last:border-0">
             <td className="px-2 py-2 font-semibold text-[#2f4d43]">{category.label}</td>
             <td className="px-2 py-2 text-right font-semibold text-[#315349]">
-              {category.avg === null ? "N/A" : `${category.avg.toFixed(2)}★`}
+              <div>{category.avg === null ? "0.00★" : `${category.avg.toFixed(2)}★`}</div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#e8f0ec]">
+                <div
+                  className="h-full rounded-full bg-[#385b4f]"
+                  style={{ width: `${category.avg === null ? 0 : Math.min(Math.max(category.avg, 0) / 5, 1) * 100}%` }}
+                />
+              </div>
+              {category.count === 0 ? <div className="mt-1 text-[10px] font-normal text-[#7c918a]">No data yet</div> : null}
             </td>
             <td className="px-2 py-2 text-right text-[#5e766c]">{category.count}</td>
           </tr>

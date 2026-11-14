@@ -2466,7 +2466,6 @@ export default function AttendanceRecordsPage() {
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Unique Attendees</p>
           <p className="mt-2 font-[var(--font-heading)] text-2xl text-[#22322d]">{uniqueAttendeeCount}</p>
-          <p className="mt-1 text-[11px] text-[#5e766c]">distinct people in the selected window</p>
         </article>
         <article className="analytics-card">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#527064]">Check-Ins</p>

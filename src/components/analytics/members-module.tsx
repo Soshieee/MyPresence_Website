@@ -162,9 +162,12 @@ export function MembersAnalyticsModule() {
       .sort((a, b) => (b.event_date ?? "").localeCompare(a.event_date ?? ""));
   }, [events, month, effectiveYear]);
 
-  // True when a specific date or event is chosen in "Specific time or event"
-  // mode: the attended view then lists only members who attended the occasion.
-  const attendeeOnly = mode === "time" && (specificDate !== "" || selectedEventId !== "all");
+  // True when a specific date, event, or event type is chosen in "Specific
+  // time or event" mode: the attended view then lists only members who
+  // attended the selection. "All event types" alone does not count — with
+  // every occasion type in scope there is nothing meaningful to be absent from.
+  const attendeeOnly =
+    mode === "time" && (specificDate !== "" || selectedEventId !== "all" || eventTypeFilter !== "all");
 
   const matchesMemberFilters = useCallback(
     (user: AnalyticsUser) => {
@@ -274,7 +277,8 @@ export function MembersAnalyticsModule() {
     return result;
   }, [attendeeOnly, matchesMemberFilters, mode, occasionDates, scopedLogs, status, users]);
 
-  // "Absent" tab: matching members with no attendance at the selected occasion.
+  // "Absent" tab: matching members with no attendance at the selected occasion,
+  // or (event type only) none of that type's occasions in the period.
   // Attended/eligible/percent describe the rest of the period; the share bar
   // fills by each member's absence share (100% − attendance%) in absentMode.
   const absentRows = useMemo((): MemberRankingRow[] => {
@@ -297,6 +301,8 @@ export function MembersAnalyticsModule() {
         registered === null
           ? periodOccasionDates.size
           : Array.from(periodOccasionDates.values()).filter((date) => date >= registered).length;
+      // Not eligible for any occasion in the period — nothing to be absent from.
+      if (eligible === 0) continue;
       const stats = periodStatsByMember.get(user.student_id);
       const attendedCount = stats?.count ?? 0;
 
@@ -382,7 +388,13 @@ export function MembersAnalyticsModule() {
       ? effectiveYear
       : formatMonthKey(`${effectiveYear}-${month}`);
   const selectedEvent = selectedEventId === "all" ? null : eventById.get(selectedEventId) ?? null;
-  const occasionLabel = selectedEvent?.title ?? (specificDate ? formatDayLabel(specificDate) : "this selection");
+  const occasionLabel =
+    selectedEvent?.title ??
+    (specificDate
+      ? formatDayLabel(specificDate)
+      : eventTypeFilter !== "all"
+        ? eventTypeFilter
+        : "this selection");
   const selectedMemberName = selectedUserId
     ? rows.find((row) => row.userId === selectedUserId)?.name ?? "Member"
     : "";
@@ -602,12 +614,18 @@ export function MembersAnalyticsModule() {
         }`}
         note={
           showingAbsent
-            ? `Members who did not attend ${occasionLabel}, biggest absence first. Attended and share columns describe the rest of the period; the Share of Period bar fills by how much of the period each member missed.`
+            ? specificDate !== "" || selectedEventId !== "all"
+              ? `Members who did not attend ${occasionLabel}, biggest absence first. Attended and share columns describe the rest of the period; the Share of Period bar fills by how much of the period each member missed.`
+              : `Members who attended none of the ${eventTypeFilter} occasions in ${periodLabel}. The Share of Period bar shows how much of the period they missed.`
             : mode === "ranking"
               ? "Eligible counts attendance occasions on or after the member's registration date. Click a member to see the events they attended."
               : selectedEvent
                 ? `Showing members who attended ${selectedEvent.title}. Click a member to see their attended events.`
-                : "No rank view: members are listed alphabetically. Click a member to see the events they attended."
+                : specificDate
+                  ? `Showing members who attended on ${formatDayLabel(specificDate)}. Click a member to see their attended events.`
+                  : eventTypeFilter !== "all"
+                    ? `Showing members who attended at least one ${eventTypeFilter} occasion. Click a member to see their attended events.`
+                    : "No rank view: members are listed alphabetically. Click a member to see the events they attended."
         }
         rows={activeRows}
         showRank={mode === "ranking"}
@@ -615,7 +633,9 @@ export function MembersAnalyticsModule() {
         absentMode={showingAbsent}
         emptyText={
           showingAbsent
-            ? "Everyone attended this occasion — nobody is absent."
+            ? specificDate !== "" || selectedEventId !== "all"
+              ? "Everyone attended this occasion — nobody is absent."
+              : `Everyone attended at least one ${eventTypeFilter} occasion.`
             : mode === "ranking"
               ? "No members match the current filters."
               : "No members attended this selection."
