@@ -19,7 +19,7 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.5",
+    "@eslint/js": "10.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^20.17.30",
     "@types/react": "^18.3.23",
