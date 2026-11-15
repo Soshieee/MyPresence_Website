@@ -136,10 +136,10 @@ export function EventsTimelineChart({
   };
 
   // The previous-year line draws across gaps (connectNulls) so the year-over-
-  // year trajectory reads as one dashed line — in the month view the values
-  // sit Sunday to Sunday with nulls between — and each value keeps a small
-  // hollow marker so isolated points stay visible even without neighbours
-  // (with dot={false} recharts draws nothing for a lone point).
+  // year trajectory reads as one continuous line — in the month view the
+  // values sit Sunday to Sunday with nulls between — and each value keeps a
+  // small hollow marker so isolated points stay visible even without
+  // neighbours (with dot={false} recharts draws nothing for a lone point).
   const renderPrevDot = (props: { cx?: number; cy?: number }) => {
     const { cx, cy } = props;
     if (cx === undefined || cy === undefined) return <g />;
@@ -182,7 +182,6 @@ export function EventsTimelineChart({
                     dataKey="prevValue"
                     name="Same period last year"
                     stroke={PREV_COLOR}
-                    strokeDasharray="6 4"
                     strokeWidth={2}
                     dot={renderPrevDot}
                     connectNulls
@@ -210,7 +209,7 @@ export function EventsTimelineChart({
             </span>
             {showPrevYear ? (
               <span className="inline-flex items-center gap-1.5">
-                <span className="inline-block h-0.5 w-5 rounded-full border-t-2 border-dashed border-[#94a3b8]" />
+                <span className="inline-block h-0.5 w-5 rounded-full bg-[#94a3b8]" />
                 Same period last year
                 {prevYear ? ` ${prevYear}` : ""} {hasPrevYearData ? "" : "(no data yet)"}
               </span>

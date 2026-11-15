@@ -64,7 +64,7 @@ const yearPoints: EventChartPoint[] = [
 ];
 
 describe("EventsTimelineChart — compare with last year", () => {
-  it("draws the dashed previous-year line and a marker per previous-year value", () => {
+  it("draws the solid previous-year line and a marker per previous-year value", () => {
     const { container } = render(
       <EventsTimelineChart
         title="Church attendance — 2025"
@@ -78,7 +78,8 @@ describe("EventsTimelineChart — compare with last year", () => {
 
     const prevPaths = container.querySelectorAll(`path[stroke="${PREV_COLOR}"]`);
     expect(prevPaths.length).toBeGreaterThanOrEqual(1);
-    expect(prevPaths[0].getAttribute("stroke-dasharray")).toBeTruthy();
+    // Solid line — distinctness comes from the lighter color, not dashing.
+    expect(prevPaths[0].getAttribute("stroke-dasharray")).toBeNull();
 
     // One visible marker for each month where last year has data (Aug, Sep, Oct).
     const prevDots = container.querySelectorAll(`circle[stroke="${PREV_COLOR}"]`);
@@ -133,8 +134,8 @@ describe("EventsTimelineChart — compare with last year", () => {
 
     const prevPaths = container.querySelectorAll(`path[stroke="${PREV_COLOR}"]`);
     expect(prevPaths.length).toBeGreaterThanOrEqual(1);
-    // The single connected path carries the dash pattern; one marker per value.
-    expect(prevPaths[0].getAttribute("stroke-dasharray")).toBeTruthy();
+    // The single connected path is solid; one marker per real value.
+    expect(prevPaths[0].getAttribute("stroke-dasharray")).toBeNull();
     expect(container.querySelectorAll(`circle[stroke="${PREV_COLOR}"]`).length).toBe(4);
   });
 
