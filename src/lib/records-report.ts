@@ -191,24 +191,59 @@ export function buildReportHtml(input: ReportInput): string {
 <body>
 ${renderReportBody(input)}
 <script>
-  window.addEventListener("load", function () {
-    setTimeout(function () { window.print(); }, 250);
-  });
+  // Print shortly after the document finished parsing. Do not wait for the
+  // window's "load" event: this document is written into an already-opened
+  // window, and some browsers never re-fire "load", which left the print
+  // dialog never opening at all.
+  setTimeout(function () { window.print(); }, 250);
 </script>
 </body>
 </html>`;
 }
 
-/** Opens a new window with the report and triggers print. Returns false when pop-ups are blocked. */
+/**
+ * Opens the printable report and triggers the browser's print dialog.
+ * Prefers a preview window; when pop-ups are blocked it falls back to a
+ * hidden iframe instead — same document, no new window, so the dialog opens
+ * either way and the button never silently does nothing.
+ */
 export function openReportWindow(input: ReportInput): boolean {
+  const html = buildReportHtml(input);
   const reportWindow = window.open("", "_blank");
 
-  if (!reportWindow) return false;
+  if (reportWindow) {
+    reportWindow.document.open();
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
+    return true;
+  }
 
-  reportWindow.document.open();
-  reportWindow.document.write(buildReportHtml(input));
-  reportWindow.document.close();
-  reportWindow.focus();
+  // Pop-ups blocked: render off-screen and print from the hidden iframe.
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.setAttribute("title", "Printable report");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  iframe.srcdoc = html;
+
+  const removeIframe = () => iframe.remove();
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } finally {
+      // Removing the frame too early can cancel the dialog in some browsers,
+      // so clean up late; "afterprint" fires earlier where supported.
+      iframe.contentWindow?.addEventListener("afterprint", removeIframe);
+      window.setTimeout(removeIframe, 60_000);
+    }
+  };
+  document.body.appendChild(iframe);
   return true;
 }
 

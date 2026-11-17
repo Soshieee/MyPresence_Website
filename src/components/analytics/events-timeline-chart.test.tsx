@@ -27,7 +27,7 @@ class ResizeObserverStub {
 }
 (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
 
-const PREV_COLOR = "#94a3b8";
+const PREV_COLOR = "#2563eb";
 
 function point(
   key: string,

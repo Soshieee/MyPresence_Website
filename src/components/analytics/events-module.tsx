@@ -188,7 +188,10 @@ export function EventsAnalyticsModule() {
           label: monthKeyLabel(key),
           fullLabel: formatMonthKey(key),
           value: attendeesInRange(key).size,
-          prevValue: prevSet.size > 0 ? prevSet.size : null,
+          // Always a number (0 when last year had none) so the comparison
+          // line runs across the whole chart instead of stopping where the
+          // previous year has data.
+          prevValue: prevSet.size,
           events: eventMarkersByKey(key),
           clickHint: "Click to view this month",
           selected: false
@@ -224,7 +227,9 @@ export function EventsAnalyticsModule() {
           label: String(Number(day)),
           fullLabel: formatDayLabel(date),
           value: set.size,
-          prevValue: prevSet.size > 0 ? prevSet.size : null,
+          // Full-width comparison line — 0 when the aligned day last year has
+          // no records, same treatment as the current year's line.
+          prevValue: prevSet.size,
           events: eventMarkersByKey(date),
           clickHint: "Click for details",
           selected: selectedDate === date
@@ -235,11 +240,12 @@ export function EventsAnalyticsModule() {
   }, [events, filteredLogs, month, selectedDate, status, typeFilter, effectiveYear]);
 
   // "Last year has data" for whatever is on screen, read from the chart points
-  // themselves: true when at least one point has a previous-year value. This
-  // keeps the "(no data yet)" legend hint exact even though the 364-day
-  // weekday alignment can move the compared days across a month boundary.
+  // themselves: true when at least one previous-year value is non-zero (the
+  // points carry 0, not null, where last year has no records). This keeps the
+  // "(no data yet)" legend hint exact even though the 364-day weekday
+  // alignment can move the compared days across a month boundary.
   const hasPrevYearData = useMemo(
-    () => chartBuild.points.some((point) => point.prevValue !== null),
+    () => chartBuild.points.some((point) => (point.prevValue ?? 0) > 0),
     [chartBuild]
   );
 

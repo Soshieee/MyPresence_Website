@@ -40,7 +40,7 @@ type TooltipPayloadItem = {
 const AXIS_TICK = { fill: "#5d736a", fontSize: 11 };
 const GRID_STROKE = "#d5dfdb";
 const MAIN_COLOR = "#0f766e";
-const PREV_COLOR = "#94a3b8";
+const PREV_COLOR = "#2563eb";
 const EVENT_DOT_COLOR = "#f59e0b";
 const EVENT_DOT_STROKE = "#b45309";
 
@@ -209,7 +209,7 @@ export function EventsTimelineChart({
             </span>
             {showPrevYear ? (
               <span className="inline-flex items-center gap-1.5">
-                <span className="inline-block h-0.5 w-5 rounded-full bg-[#94a3b8]" />
+                <span className="inline-block h-0.5 w-5 rounded-full bg-[#2563eb]" />
                 Same period last year
                 {prevYear ? ` ${prevYear}` : ""} {hasPrevYearData ? "" : "(no data yet)"}
               </span>
