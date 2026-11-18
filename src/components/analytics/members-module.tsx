@@ -17,6 +17,8 @@ import {
   fetchAttendanceHistory,
   formatDayLabel,
   formatMonthKey,
+  MONTH_OPTIONS,
+  monthName,
   toDateKey,
   type AnalyticsEvent,
   type AnalyticsUser
@@ -109,15 +111,6 @@ export function MembersAnalyticsModule() {
     () => (year && yearOptions.includes(year) ? year : yearOptions[0] ?? ""),
     [year, yearOptions]
   );
-
-  const monthOptions = useMemo(() => {
-    if (!effectiveYear) return [] as string[];
-    const months = new Set<string>();
-    for (const log of logs) {
-      if (log.attended_date.slice(0, 4) === effectiveYear) months.add(log.attended_date.slice(5, 7));
-    }
-    return Array.from(months).sort();
-  }, [logs, effectiveYear]);
 
   const eventById = useMemo(() => {
     const map = new Map<string, AnalyticsEvent>();
@@ -437,8 +430,9 @@ export function MembersAnalyticsModule() {
             className="field-input max-w-[130px]"
             value={effectiveYear}
             onChange={(event) => {
+              // Keep the selected month when only the year changes — the
+              // filters are independent, like the Events module.
               setYear(event.target.value);
-              setMonth("all");
               setSpecificDate("");
               setSelectedEventId("all");
               setSelectedUserId(null);
@@ -469,8 +463,8 @@ export function MembersAnalyticsModule() {
             }}
           >
             <option value="all">Whole year</option>
-            {monthOptions.map((option) => (
-              <option key={option} value={option}>{formatMonthKey(`${effectiveYear}-${option}`)}</option>
+            {MONTH_OPTIONS.map((option) => (
+              <option key={option} value={option}>{monthName(option)}</option>
             ))}
           </select>
         </div>

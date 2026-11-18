@@ -26,6 +26,8 @@ import {
   isPresentAttendance,
   lifegroupActivityDate,
   lifegroupAttendanceDate,
+  MONTH_OPTIONS,
+  monthName,
   profileDisplayName,
   rowString,
   toDateKey,
@@ -195,19 +197,6 @@ export function LifegroupAnalyticsModule() {
     () => (year && yearOptions.includes(year) ? year : yearOptions[0] ?? ""),
     [year, yearOptions]
   );
-
-  const monthOptions = useMemo(() => {
-    if (!effectiveYear) return [] as string[];
-    const months = new Set<string>();
-    for (const activity of data?.activities ?? []) {
-      const date = lifegroupActivityDate(activity);
-      if (date?.startsWith(effectiveYear)) months.add(date.slice(5, 7));
-    }
-    for (const record of presentRecords) {
-      if (record.date.startsWith(effectiveYear)) months.add(record.date.slice(5, 7));
-    }
-    return Array.from(months).sort();
-  }, [data, presentRecords, effectiveYear]);
 
   const groupOptions = useMemo(() => {
     return [...(data?.lifegroups ?? [])].sort((a, b) => a.name.localeCompare(b.name));
@@ -515,8 +504,9 @@ export function LifegroupAnalyticsModule() {
             className="field-input max-w-[140px]"
             value={effectiveYear}
             onChange={(event) => {
+              // Keep the selected month when only the year changes — the
+              // filters are independent, like the Events module.
               setYear(event.target.value);
-              setMonth("all");
               setSelectedDay(null);
             }}
           >
@@ -539,8 +529,8 @@ export function LifegroupAnalyticsModule() {
             }}
           >
             <option value="all">Whole year (monthly view)</option>
-            {monthOptions.map((option) => (
-              <option key={option} value={option}>{formatMonthKey(`${effectiveYear}-${option}`)}</option>
+            {MONTH_OPTIONS.map((option) => (
+              <option key={option} value={option}>{monthName(option)}</option>
             ))}
           </select>
         </div>

@@ -418,3 +418,13 @@ export function formatMonthKey(key: string): string {
   if (!year || !month) return key;
   return new Date(year, month - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
 }
+
+/** All twelve months ("01"…"12") — the month filter is year-independent. */
+export const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) => `${index + 1}`.padStart(2, "0"));
+
+/** Long month name for a "MM" option, e.g. "03" -> "March" (year-independent labels). */
+export function monthName(month: string): string {
+  const monthNumber = Number(month);
+  if (!monthNumber || monthNumber < 1 || monthNumber > 12) return month;
+  return new Date(2026, monthNumber - 1, 1).toLocaleDateString(undefined, { month: "long" });
+}

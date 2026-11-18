@@ -27,6 +27,8 @@ import {
   fetchFeedbackSummaries,
   formatDayLabel,
   formatMonthKey,
+  MONTH_OPTIONS,
+  monthName,
   type AnalyticsEvent,
   type AnalyticsUser
 } from "@/lib/analytics-data";
@@ -135,19 +137,6 @@ export function EventsAnalyticsModule() {
     [year, yearOptions]
   );
 
-  const monthOptions = useMemo(() => {
-    if (!effectiveYear) return [] as string[];
-    const months = new Set<string>();
-    for (const log of logs) {
-      if (log.attended_date.slice(0, 4) !== effectiveYear) continue;
-      months.add(log.attended_date.slice(5, 7));
-    }
-    for (const event of events) {
-      if (event.event_date?.slice(0, 4) === effectiveYear) months.add(event.event_date.slice(5, 7));
-    }
-    return Array.from(months).sort();
-  }, [logs, events, effectiveYear]);
-
   const userByStudentId = useMemo(() => {
     const map = new Map<string, AnalyticsUser>();
     for (const user of users) map.set(user.student_id, user);
@@ -201,40 +190,37 @@ export function EventsAnalyticsModule() {
     }
 
     const monthPrefix = `${effectiveYear}-${month}`;
-    const days = new Set<string>();
-    for (const log of filteredLogs) {
-      if (log.attended_date.startsWith(monthPrefix)) days.add(log.attended_date);
-    }
-    for (const event of events) {
-      if (event.event_date?.startsWith(monthPrefix)) days.add(event.event_date);
-    }
+    // Full-month axis: every day of the selected month gets a point (0 when
+    // nothing happened), so the lines always run edge to edge — a lone event
+    // reads as a spike in the month's line instead of a single floating dot,
+    // and the previous-year comparison line stays visible all month long.
+    const daysInMonth = new Date(Number(effectiveYear), Number(month), 0).getDate();
 
-    const points: EventChartPoint[] = Array.from(days)
-      .sort()
-      .map((date) => {
-        const day = date.slice(8, 10);
-        // Compare with the same weekday one year earlier, not the same day
-        // number: attendance lives on Sundays, and the weekday drifts against
-        // the calendar. Exactly 52 weeks back (364 days) lines up Sunday with
-        // Sunday — e.g. Sun Nov 8, 2026 compares with Sun Nov 9, 2025.
-        const shifted = new Date(`${date}T00:00:00`);
-        shifted.setDate(shifted.getDate() - 364);
-        const prevDate = toLocalDateInput(shifted);
-        const set = attendeesInRange(date);
-        const prevSet = attendeesInRange(prevDate);
-        return {
-          key: date,
-          label: String(Number(day)),
-          fullLabel: formatDayLabel(date),
-          value: set.size,
-          // Full-width comparison line — 0 when the aligned day last year has
-          // no records, same treatment as the current year's line.
-          prevValue: prevSet.size,
-          events: eventMarkersByKey(date),
-          clickHint: "Click for details",
-          selected: selectedDate === date
-        };
-      });
+    const points: EventChartPoint[] = Array.from({ length: daysInMonth }, (_, index) => {
+      const day = `${index + 1}`.padStart(2, "0");
+      const date = `${monthPrefix}-${day}`;
+      // Compare with the same weekday one year earlier, not the same day
+      // number: attendance lives on Sundays, and the weekday drifts against
+      // the calendar. Exactly 52 weeks back (364 days) lines up Sunday with
+      // Sunday — e.g. Sun Nov 8, 2026 compares with Sun Nov 9, 2025.
+      const shifted = new Date(`${date}T00:00:00`);
+      shifted.setDate(shifted.getDate() - 364);
+      const prevDate = toLocalDateInput(shifted);
+      const set = attendeesInRange(date);
+      const prevSet = attendeesInRange(prevDate);
+      return {
+        key: date,
+        label: String(index + 1),
+        fullLabel: formatDayLabel(date),
+        value: set.size,
+        // Full-width comparison line — 0 when the aligned day last year has
+        // no records, same treatment as the current year's line.
+        prevValue: prevSet.size,
+        events: eventMarkersByKey(date),
+        clickHint: "Click for details",
+        selected: selectedDate === date
+      };
+    });
 
     return { points, granularity: "month" as const };
   }, [events, filteredLogs, month, selectedDate, status, typeFilter, effectiveYear]);
@@ -404,8 +390,9 @@ export function EventsAnalyticsModule() {
             className="field-input max-w-[140px]"
             value={effectiveYear}
             onChange={(event) => {
+              // Keep the selected month when only the year changes — the
+              // filters are independent (October 2025 → October 2024).
               setYear(event.target.value);
-              setMonth("all");
               setSelectedDate(null);
             }}
           >
@@ -428,8 +415,8 @@ export function EventsAnalyticsModule() {
             }}
           >
             <option value="all">Whole year (monthly view)</option>
-            {monthOptions.map((option) => (
-              <option key={option} value={option}>{formatMonthKey(`${effectiveYear}-${option}`)}</option>
+            {MONTH_OPTIONS.map((option) => (
+              <option key={option} value={option}>{monthName(option)}</option>
             ))}
           </select>
         </div>
